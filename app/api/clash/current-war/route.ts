@@ -17,8 +17,8 @@ export async function GET() {
   const encodedTag = encodeURIComponent(clanTag.trim());
 
   try {
-    const response = await fetch(
-      `https://api.clashofclans.com/v1/clans/${encodedTag}/currentwar`,
+      const response = await fetch(
+  `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
