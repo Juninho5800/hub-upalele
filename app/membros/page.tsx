@@ -65,7 +65,7 @@ export default async function MembersPage() {
   } else {
     try {
       const response = await fetch(
-  `https://api.clashofclans.com/v1/clans/${encodeURIComponent(
+  `https://https://cocproxy.royaleapi.dev/v1/clans/${encodeURIComponent(
     clanTag.trim()
   )}`,
   {
