@@ -201,14 +201,22 @@ export async function GET(request: Request) {
     );
 
     if (!response.ok) {
-      return NextResponse.json(
-        {
-          error: "Não foi possível consultar a guerra atual.",
-          status: response.status,
-        },
-        { status: response.status }
-      );
-    }
+  const details = await response.text();
+
+  console.error("[Clash API] recommend-target:", {
+    status: response.status,
+    details,
+  });
+
+  return NextResponse.json(
+    {
+      error: "Não foi possível consultar a guerra atual.",
+      status: response.status,
+      details,
+    },
+    { status: response.status }
+  );
+}
 
     const war = (await response.json()) as War;
 
