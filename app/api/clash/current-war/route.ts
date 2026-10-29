@@ -14,11 +14,12 @@ export async function GET() {
     );
   }
 
-  const encodedTag = encodeURIComponent(clanTag.trim());
+  const normalizedTag = clanTag.trim().replace(/^#/, "");
+  const encodedTag = encodeURIComponent(`#${normalizedTag}`);
 
   try {
-      const response = await fetch(
-  `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
+    const response = await fetch(
+      `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -29,11 +30,18 @@ export async function GET() {
     );
 
     if (response.status === 404) {
+      const details = await response.text();
+
+      console.error("[Clash API] current-war:", {
+        status: response.status,
+        details,
+      });
+
       return NextResponse.json({
         connected: true,
         inWar: false,
         message:
-          "Clã encontrado, mas não há dados de guerra disponíveis. Pode não haver guerra ativa ou os dados podem não estar acessíveis.",
+          "A API não encontrou dados de guerra para este clã.",
       });
     }
 
@@ -85,7 +93,9 @@ export async function GET() {
           }
         : null,
     });
-  } catch {
+  } catch (error) {
+    console.error("[Clash API] Erro ao consultar current-war:", error);
+
     return NextResponse.json(
       { error: "Não foi possível conectar à API do Clash of Clans." },
       { status: 502 }

@@ -15,7 +15,8 @@ type Member = {
   tag: string;
   name: string;
   mapPosition: number;
-  townHallLevel: number;
+  townhallLevel?: number;
+  townHallLevel?: number;
   attacks?: Attack[];
 };
 
@@ -31,39 +32,38 @@ type War = {
   opponent: Side;
 };
 
+function normalizeTag(tag: string) {
+  return tag.replace(/^#/, "").toUpperCase();
+}
+
+function getTownHallLevel(member: Member) {
+  return member.townhallLevel ?? member.townHallLevel;
+}
+
 function getTarget(
   type: "1" | "2",
   player: Member,
   allies: Member[],
   enemies: Member[]
 ) {
-  const available = enemies.filter((enemy) => {
-  // As estrelas são conquistadas pelos ataques feitos CONTRA a vila.
-  // A lista enemy.attacks contém os ataques realizados por essa vila,
-  // não os ataques recebidos por ela.
-  const attacksAgainstEnemy = allies.flatMap(
+  const attacksAgainstEnemies = allies.flatMap(
     (ally) => ally.attacks ?? []
   );
 
-  const bestStarsReceived = attacksAgainstEnemy
-    .filter((attack) => {
-      const defenderTag = attack.defenderTag
-        .replace(/^#/, "")
-        .toUpperCase();
+  const available = enemies.filter((enemy) => {
+    const bestStarsReceived = attacksAgainstEnemies
+      .filter(
+        (attack) =>
+          normalizeTag(attack.defenderTag) ===
+          normalizeTag(enemy.tag)
+      )
+      .reduce(
+        (best, attack) => Math.max(best, attack.stars),
+        0
+      );
 
-      const enemyTag = enemy.tag
-        .replace(/^#/, "")
-        .toUpperCase();
-
-      return defenderTag === enemyTag;
-    })
-    .reduce(
-      (best, attack) => Math.max(best, attack.stars),
-      0
-    );
-
-  return bestStarsReceived < 3;
-});
+    return bestStarsReceived < 3;
+  });
 
   if (!available.length) {
     return {
@@ -74,6 +74,7 @@ function getTarget(
 
   if (type === "1") {
     const initialPosition = player.mapPosition + 2;
+
     const initial = available.find(
       (enemy) => enemy.mapPosition === initialPosition
     );
@@ -81,7 +82,8 @@ function getTarget(
     if (initial) {
       return {
         target: initial,
-        reason: `Alvo inicial: duas posições abaixo do espelho, conforme o item 2.14. A vila ainda possui estrelas disponíveis.`,
+        reason:
+          "Alvo inicial: duas posições abaixo do espelho, conforme o item 2.14. A vila ainda possui estrelas disponíveis.",
       };
     }
 
@@ -108,31 +110,50 @@ function getTarget(
     };
   }
 
+  const playerCv = getTownHallLevel(player);
+
+  // Não inventamos a prioridade se não conhecemos o CV do jogador.
+  if (playerCv == null) {
+    return {
+      target: null,
+      reason:
+        "Não foi possível identificar o CV do jogador na resposta da guerra.",
+    };
+  }
+
   const sameCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel === player.townHallLevel
-    )
+    .filter((enemy) => getTownHallLevel(enemy) === playerCv)
     .sort((a, b) => b.mapPosition - a.mapPosition);
 
   const lowerCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel < player.townHallLevel
-    )
+    .filter((enemy) => {
+      const enemyCv = getTownHallLevel(enemy);
+      return enemyCv != null && enemyCv < playerCv;
+    })
     .sort((a, b) => b.mapPosition - a.mapPosition);
 
   const higherCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel > player.townHallLevel
-    )
+    .filter((enemy) => {
+      const enemyCv = getTownHallLevel(enemy);
+      return enemyCv != null && enemyCv > playerCv;
+    })
     .sort((a, b) => b.mapPosition - a.mapPosition);
 
-  const target = sameCv[0] ?? lowerCv[0] ?? higherCv[0] ?? null;
+  const target =
+    sameCv[0] ?? lowerCv[0] ?? higherCv[0] ?? null;
+
+  if (!target) {
+    return {
+      target: null,
+      reason:
+        "Não foi possível encontrar um alvo disponível com CV identificado.",
+    };
+  }
 
   return {
     target,
-    reason: target
-      ? `Prioridade aplicada conforme os itens 2.18–2.20: CV igual, depois CV inferior e, por último, CV superior; em cada categoria, de baixo para cima.`
-      : "Não foi possível encontrar um alvo válido.",
+    reason:
+      "Prioridade aplicada conforme os itens 2.18–2.20: CV igual, depois CV inferior e, por último, CV superior; em cada categoria, de baixo para cima.",
   };
 }
 
@@ -186,11 +207,12 @@ export async function GET(request: Request) {
     );
   }
 
+  const normalizedClanTag = normalizeTag(clanTag);
+  const encodedTag = encodeURIComponent(`#${normalizedClanTag}`);
+
   try {
     const response = await fetch(
-      `https://cocproxy.royaleapi.dev/v1/clans/${encodeURIComponent(
-        clanTag.trim()
-      )}/currentwar`,
+      `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -201,22 +223,22 @@ export async function GET(request: Request) {
     );
 
     if (!response.ok) {
-  const details = await response.text();
+      const details = await response.text();
 
-  console.error("[Clash API] recommend-target:", {
-    status: response.status,
-    details,
-  });
+      console.error("[Clash API] recommend-target:", {
+        status: response.status,
+        details,
+      });
 
-  return NextResponse.json(
-    {
-      error: "Não foi possível consultar a guerra atual.",
-      status: response.status,
-      details,
-    },
-    { status: response.status }
-  );
-}
+      return NextResponse.json(
+        {
+          error: "Não foi possível consultar a guerra atual.",
+          status: response.status,
+          details,
+        },
+        { status: response.status }
+      );
+    }
 
     const war = (await response.json()) as War;
 
@@ -226,24 +248,28 @@ export async function GET(request: Request) {
       !["preparation", "inWar"].includes(war.state)
     ) {
       return NextResponse.json(
-        { error: "Não há uma guerra válida para recomendar alvos." },
+        {
+          error:
+            "Não há uma guerra válida para recomendar alvos.",
+        },
         { status: 409 }
       );
     }
 
-    const playerTag = profile.player_tag.replace(/^#/, "").toUpperCase();
+    const playerTag = normalizeTag(profile.player_tag);
 
-    const allies = war.clan.members.map((member) => ({
+    const normalizeMember = (member: Member): Member => ({
       ...member,
-      tag: member.tag.replace(/^#/, "").toUpperCase(),
-    }));
+      tag: normalizeTag(member.tag),
+      townHallLevel: getTownHallLevel(member),
+    });
 
-    const enemies = war.opponent.members.map((member) => ({
-      ...member,
-      tag: member.tag.replace(/^#/, "").toUpperCase(),
-    }));
+    const allies = war.clan.members.map(normalizeMember);
+    const enemies = war.opponent.members.map(normalizeMember);
 
-    const player = allies.find((member) => member.tag === playerTag);
+    const player = allies.find(
+      (member) => member.tag === playerTag
+    );
 
     if (!player) {
       return NextResponse.json(
@@ -279,7 +305,7 @@ export async function GET(request: Request) {
         success: true,
         recommendation: null,
         message:
-          "Realize seu primeiro ataque antes de consultar o segundo.",
+          "A API ainda não registra seu primeiro ataque nesta guerra.",
       });
     }
 
@@ -304,7 +330,7 @@ export async function GET(request: Request) {
         tag: player.tag,
         name: player.name,
         position: player.mapPosition,
-        townHallLevel: player.townHallLevel,
+        townHallLevel: getTownHallLevel(player) ?? null,
         attacksUsed,
       },
       attackType: type,
@@ -312,13 +338,18 @@ export async function GET(request: Request) {
         tag: target.tag,
         name: target.name,
         position: target.mapPosition,
-        townHallLevel: target.townHallLevel,
+        townHallLevel: getTownHallLevel(target) ?? null,
       },
       reason,
       warning:
         "Confira o mapa antes de atacar. Se outro jogador estiver atacando o alvo, aguarde o término, conforme o item 2.9 do memorial.",
     });
-  } catch {
+  } catch (error) {
+    console.error(
+      "[Clash API] Erro ao recomendar alvo:",
+      error
+    );
+
     return NextResponse.json(
       { error: "Erro inesperado ao calcular a recomendação." },
       { status: 500 }

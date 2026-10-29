@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
@@ -17,6 +18,29 @@ type WarMember = {
   mapPosition: number;
   attacks?: WarAttack[];
 };
+
+type WarSide = {
+  tag: string;
+  name: string;
+  stars?: number;
+  destructionPercentage?: number;
+  members?: WarMember[];
+};
+
+type ClashWar = {
+  state: string;
+  teamSize?: number;
+  attacksPerMember?: number;
+  preparationStartTime?: string;
+  startTime?: string;
+  endTime?: string;
+  clan: WarSide;
+  opponent: WarSide;
+};
+
+function normalizeTag(tag: string): string {
+  return tag.replace(/^#/, "").toUpperCase();
+}
 
 function parseClashDate(value?: string | null): string | null {
   if (!value) return null;
@@ -82,16 +106,17 @@ export async function POST() {
 
   if (!token || !clanTag) {
     return NextResponse.json(
-      { error: "Configure o token e a tag no .env.local." },
+      { error: "Configure o token e a tag nas variáveis de ambiente." },
       { status: 500 }
     );
   }
 
   try {
+    const normalizedClanTag = normalizeTag(clanTag);
+    const encodedTag = encodeURIComponent(`#${normalizedClanTag}`);
+
     const response = await fetch(
-      `https://cocproxy.royaleapi.dev/v1/clans/${encodeURIComponent(
-        clanTag.trim()
-      )}/currentwar`,
+      `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -111,25 +136,39 @@ export async function POST() {
     }
 
     if (!response.ok) {
+      const details = await response.text();
+
+      console.error("[Clash API] sync:", {
+        status: response.status,
+        details,
+      });
+
       return NextResponse.json(
         {
           error: "Falha ao consultar a API do Clash of Clans.",
           status: response.status,
+          details,
         },
         { status: response.status }
       );
     }
 
-    const war = await response.json();
+    const war = (await response.json()) as ClashWar;
 
-    if (!war.clan || !war.opponent || !war.preparationStartTime) {
+    if (
+      !war.clan ||
+      !war.opponent ||
+      !war.preparationStartTime
+    ) {
       return NextResponse.json(
         { error: "A API retornou dados incompletos da guerra." },
         { status: 502 }
       );
     }
 
-    const preparationStart = parseClashDate(war.preparationStartTime);
+    const preparationStart = parseClashDate(
+      war.preparationStartTime
+    );
     const warStart = parseClashDate(war.startTime);
     const warEnd = parseClashDate(war.endTime);
 
@@ -141,7 +180,9 @@ export async function POST() {
     }
 
     const externalWarTag =
-      `${war.clan.tag}:${war.opponent.tag}:${war.preparationStartTime}`;
+      `${normalizeTag(war.clan.tag)}:` +
+      `${normalizeTag(war.opponent.tag)}:` +
+      `${war.preparationStartTime}`;
 
     const status =
       war.state === "preparation"
@@ -183,30 +224,48 @@ export async function POST() {
       );
     }
 
-    const clanMembers: WarMember[] = Array.isArray(war.clan.members)
+    const clanMembers: WarMember[] = Array.isArray(
+      war.clan.members
+    )
       ? war.clan.members
       : [];
 
-    const opponentMembers: WarMember[] = Array.isArray(war.opponent.members)
+    const opponentMembers: WarMember[] = Array.isArray(
+      war.opponent.members
+    )
       ? war.opponent.members
       : [];
 
-    const clanByTag = new Map<string, WarMember>(
-      clanMembers.map((member) => [member.tag, member])
+    const clanByTag = new Map(
+      clanMembers.map((member) => [
+        normalizeTag(member.tag),
+        member,
+      ])
     );
 
-    const opponentByTag = new Map<string, WarMember>(
-      opponentMembers.map((member) => [member.tag, member])
+    const opponentByTag = new Map(
+      opponentMembers.map((member) => [
+        normalizeTag(member.tag),
+        member,
+      ])
     );
 
+    // Salva os ataques dos dois lados da guerra.
     const attacks: Record<string, unknown>[] = [];
 
     for (const member of clanMembers) {
       for (const attack of member.attacks ?? []) {
-        const attacker = clanByTag.get(attack.attackerTag) ?? member;
-        const defender = opponentByTag.get(attack.defenderTag);
+        if (!attack.attackerTag || !attack.defenderTag) {
+          continue;
+        }
 
-        if (!attack.attackerTag || !attack.defenderTag) continue;
+        const attacker =
+          clanByTag.get(normalizeTag(attack.attackerTag)) ??
+          member;
+
+        const defender = opponentByTag.get(
+          normalizeTag(attack.defenderTag)
+        );
 
         attacks.push({
           war_id: savedWar.id,
@@ -217,9 +276,11 @@ export async function POST() {
           attacker_map_position: attacker.mapPosition ?? null,
           defender_map_position: defender?.mapPosition ?? null,
           stars: attack.stars ?? 0,
-          destruction_percent: attack.destructionPercentage ?? 0,
+          destruction_percent:
+            attack.destructionPercentage ?? 0,
           attack_order: attack.order ?? null,
-          external_attack_key: `${attack.attackerTag}:${attack.order}`,
+          external_attack_key:
+            `${normalizeTag(attack.attackerTag)}:${attack.order}`,
           raw_payload: attack,
         });
       }
@@ -227,10 +288,17 @@ export async function POST() {
 
     for (const member of opponentMembers) {
       for (const attack of member.attacks ?? []) {
-        const attacker = opponentByTag.get(attack.attackerTag) ?? member;
-        const defender = clanByTag.get(attack.defenderTag);
+        if (!attack.attackerTag || !attack.defenderTag) {
+          continue;
+        }
 
-        if (!attack.attackerTag || !attack.defenderTag) continue;
+        const attacker =
+          opponentByTag.get(normalizeTag(attack.attackerTag)) ??
+          member;
+
+        const defender = clanByTag.get(
+          normalizeTag(attack.defenderTag)
+        );
 
         attacks.push({
           war_id: savedWar.id,
@@ -241,9 +309,11 @@ export async function POST() {
           attacker_map_position: attacker.mapPosition ?? null,
           defender_map_position: defender?.mapPosition ?? null,
           stars: attack.stars ?? 0,
-          destruction_percent: attack.destructionPercentage ?? 0,
+          destruction_percent:
+            attack.destructionPercentage ?? 0,
           attack_order: attack.order ?? null,
-          external_attack_key: `${attack.attackerTag}:${attack.order}`,
+          external_attack_key:
+            `${normalizeTag(attack.attackerTag)}:${attack.order}`,
           raw_payload: attack,
         });
       }
@@ -253,13 +323,14 @@ export async function POST() {
       const { error: attacksError } = await supabase
         .from("war_attacks")
         .upsert(attacks, {
-  onConflict: "war_id,external_attack_key",
-});
+          onConflict: "war_id,external_attack_key",
+        });
 
       if (attacksError) {
         return NextResponse.json(
           {
-            error: "A guerra foi salva, mas houve falha ao salvar os ataques.",
+            error:
+              "A guerra foi salva, mas houve falha ao salvar os ataques.",
             details: attacksError.message,
             warId: savedWar.id,
           },
@@ -268,15 +339,177 @@ export async function POST() {
       }
     }
 
+    // Detecção automática dos desvios no primeiro ataque.
+    // A ordem dos ataques é importante para calcular as estrelas
+    // que cada vila já havia recebido no momento do ataque.
+    const orderedAttacks = clanMembers
+      .flatMap((member) =>
+        (member.attacks ?? []).map((attack) => ({
+          member,
+          attack,
+          attackerTag: normalizeTag(
+            attack.attackerTag || member.tag
+          ),
+          defenderTag: normalizeTag(attack.defenderTag),
+        }))
+      )
+      .filter(
+        (item) => item.attackerTag && item.defenderTag
+      )
+      .sort((a, b) => a.attack.order - b.attack.order);
+
+    const bestStarsByEnemy = new Map<string, number>();
+    const playersAlreadyAttacked = new Set<string>();
+
+    let occurrencesCreated = 0;
+    let occurrenceErrors = 0;
+
+    for (const item of orderedAttacks) {
+      const {
+        member,
+        attack,
+        attackerTag,
+        defenderTag,
+      } = item;
+
+      const defender = opponentByTag.get(defenderTag);
+
+      if (!defender) continue;
+
+      const isFirstAttack =
+        !playersAlreadyAttacked.has(attackerTag);
+
+      playersAlreadyAttacked.add(attackerTag);
+
+      if (isFirstAttack) {
+        const initialPosition = member.mapPosition + 2;
+
+        const availableEnemies = opponentMembers.filter(
+          (enemy) =>
+            (bestStarsByEnemy.get(
+              normalizeTag(enemy.tag)
+            ) ?? 0) < 3
+        );
+
+        const initialTarget = availableEnemies.find(
+          (enemy) => enemy.mapPosition === initialPosition
+        );
+
+        const below = availableEnemies
+          .filter(
+            (enemy) => enemy.mapPosition > initialPosition
+          )
+          .sort((a, b) => a.mapPosition - b.mapPosition);
+
+        const above = availableEnemies
+          .filter(
+            (enemy) => enemy.mapPosition < initialPosition
+          )
+          .sort((a, b) => b.mapPosition - a.mapPosition);
+
+        const expectedTarget =
+          initialTarget ?? below[0] ?? above[0] ?? null;
+
+        if (
+          expectedTarget &&
+          normalizeTag(expectedTarget.tag) !== defenderTag
+        ) {
+          const externalAttackKey =
+            `first:${savedWar.id}:${attackerTag}:${attack.order}`;
+
+          const ruleReference = initialTarget
+            ? "Item 2.14"
+            : below.length
+              ? "Itens 2.15 e 2.16"
+              : "Item 2.17";
+
+          const description =
+            `ERRO DE ESTRATÉGIA — 1º ATAQUE\n\n` +
+            `Jogador: ${member.name} (#${member.mapPosition}).\n` +
+            `Alvo atacado: ${defender.name} (#${defender.mapPosition}).\n` +
+            `Alvo esperado: ${expectedTarget.name} (#${expectedTarget.mapPosition}).\n` +
+            `Motivo: divergência em relação ao alvo esperado conforme ${ruleReference} do memorial.\n\n` +
+            `Ocorrência detectada automaticamente pelo HUB. ` +
+            `A liderança deve conferir o mapa e analisar o caso antes de decidir.`; 
+
+          // A chave única impede registrar novamente o mesmo ataque
+          // em sincronizações futuras.
+          const { data: inserted, error: occurrenceError } =
+            await supabase
+              .from("war_occurrences")
+              .upsert(
+                {
+                  war_id: savedWar.id,
+                  external_attack_key: externalAttackKey,
+                  attack_order: attack.order,
+                  player_position: member.mapPosition,
+                  title: "Erro de estratégia — 1º ataque",
+                  occurrence_type: "strategy_error",
+                  status: "pending",
+                  player_name: member.name,
+                  player_tag: member.tag,
+                  attack_number: 1,
+                  attacked_target_name: defender.name,
+                  attacked_target_tag: defender.tag,
+                  attacked_target_position: defender.mapPosition,
+                  expected_target_name: expectedTarget.name,
+                  expected_target_tag: expectedTarget.tag,
+                  expected_target_position:
+                    expectedTarget.mapPosition,
+                  rule_reference: ruleReference,
+                  description,
+                  created_by: user.id,
+                },
+                {
+                  onConflict: "external_attack_key",
+                  ignoreDuplicates: true,
+                }
+              )
+              .select("id");
+
+          if (occurrenceError) {
+            occurrenceErrors++;
+
+            console.error(
+              "[Occurrences] Erro ao registrar ocorrência:",
+              occurrenceError.message
+            );
+          } else if (inserted && inserted.length > 0) {
+            occurrencesCreated++;
+          }
+        }
+      }
+
+      // Atualiza as estrelas conhecidas após avaliar o ataque.
+      const previousStars =
+        bestStarsByEnemy.get(defenderTag) ?? 0;
+
+      bestStarsByEnemy.set(
+        defenderTag,
+        Math.max(previousStars, attack.stars ?? 0)
+      );
+    }
+
+    console.log("[Occurrences] Detecção concluída:", {
+      warId: savedWar.id,
+      attacksAnalyzed: orderedAttacks.length,
+      occurrencesCreated,
+      occurrenceErrors,
+    });
+
     return NextResponse.json({
       success: true,
       warId: savedWar.id,
       status,
       teamSize: war.teamSize,
       attacksProcessed: attacks.length,
+      occurrencesCreated,
+      occurrenceErrors,
       message: "Sincronização concluída.",
     });
-  } catch {
+  } catch (error) {
+    console.error("[Clash API] Erro durante sincronização:", error);
+
     return NextResponse.json(
       { error: "Erro inesperado durante a sincronização." },
       { status: 500 }

@@ -19,6 +19,7 @@ const clanLinks = [
 const leadershipLinks = [
   { href: "/votacoes", icon: "⚖", label: "Votações" },
   { href: "/lideranca", icon: "♛", label: "Central da liderança" },
+  { href: "/ocorrencias", icon: "🚨", label: "Central de ocorrências" },
 ];
 
 type AppShellProps = {
