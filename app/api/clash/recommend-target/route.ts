@@ -1,6 +1,12 @@
 
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  getTarget,
+  getTownHallLevel,
+  normalizeTag,
+  type StrategyMember,
+} from "@/lib/clash/strategy";
 
 export const dynamic = "force-dynamic";
 
@@ -11,12 +17,7 @@ type Attack = {
   order: number;
 };
 
-type Member = {
-  tag: string;
-  name: string;
-  mapPosition: number;
-  townhallLevel?: number;
-  townHallLevel?: number;
+type Member = StrategyMember & {
   attacks?: Attack[];
 };
 
@@ -31,131 +32,6 @@ type War = {
   clan: Side;
   opponent: Side;
 };
-
-function normalizeTag(tag: string) {
-  return tag.replace(/^#/, "").toUpperCase();
-}
-
-function getTownHallLevel(member: Member) {
-  return member.townhallLevel ?? member.townHallLevel;
-}
-
-function getTarget(
-  type: "1" | "2",
-  player: Member,
-  allies: Member[],
-  enemies: Member[]
-) {
-  const attacksAgainstEnemies = allies.flatMap(
-    (ally) => ally.attacks ?? []
-  );
-
-  const available = enemies.filter((enemy) => {
-    const bestStarsReceived = attacksAgainstEnemies
-      .filter(
-        (attack) =>
-          normalizeTag(attack.defenderTag) ===
-          normalizeTag(enemy.tag)
-      )
-      .reduce(
-        (best, attack) => Math.max(best, attack.stars),
-        0
-      );
-
-    return bestStarsReceived < 3;
-  });
-
-  if (!available.length) {
-    return {
-      target: null,
-      reason: "Não há alvos com estrelas disponíveis.",
-    };
-  }
-
-  if (type === "1") {
-    const initialPosition = player.mapPosition + 2;
-
-    const initial = available.find(
-      (enemy) => enemy.mapPosition === initialPosition
-    );
-
-    if (initial) {
-      return {
-        target: initial,
-        reason:
-          "Alvo inicial: duas posições abaixo do espelho, conforme o item 2.14. A vila ainda possui estrelas disponíveis.",
-      };
-    }
-
-    const below = available
-      .filter((enemy) => enemy.mapPosition > initialPosition)
-      .sort((a, b) => a.mapPosition - b.mapPosition);
-
-    if (below.length) {
-      return {
-        target: below[0],
-        reason:
-          "O alvo inicial não está disponível. Este é o próximo alvo abaixo com estrelas disponíveis, conforme os itens 2.15 e 2.16.",
-      };
-    }
-
-    const above = available
-      .filter((enemy) => enemy.mapPosition < initialPosition)
-      .sort((a, b) => b.mapPosition - a.mapPosition);
-
-    return {
-      target: above[0] ?? null,
-      reason:
-        "Não há alvos disponíveis abaixo. Esta é a primeira vila disponível subindo no mapa, conforme o item 2.17.",
-    };
-  }
-
-  const playerCv = getTownHallLevel(player);
-
-  // Não inventamos a prioridade se não conhecemos o CV do jogador.
-  if (playerCv == null) {
-    return {
-      target: null,
-      reason:
-        "Não foi possível identificar o CV do jogador na resposta da guerra.",
-    };
-  }
-
-  const sameCv = available
-    .filter((enemy) => getTownHallLevel(enemy) === playerCv)
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const lowerCv = available
-    .filter((enemy) => {
-      const enemyCv = getTownHallLevel(enemy);
-      return enemyCv != null && enemyCv < playerCv;
-    })
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const higherCv = available
-    .filter((enemy) => {
-      const enemyCv = getTownHallLevel(enemy);
-      return enemyCv != null && enemyCv > playerCv;
-    })
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const target =
-    sameCv[0] ?? lowerCv[0] ?? higherCv[0] ?? null;
-
-  if (!target) {
-    return {
-      target: null,
-      reason:
-        "Não foi possível encontrar um alvo disponível com CV identificado.",
-    };
-  }
-
-  return {
-    target,
-    reason:
-      "Prioridade aplicada conforme os itens 2.18–2.20: CV igual, depois CV inferior e, por último, CV superior; em cada categoria, de baixo para cima.",
-  };
-}
 
 export async function GET(request: Request) {
   const supabase = await createClient();
@@ -249,8 +125,7 @@ export async function GET(request: Request) {
     ) {
       return NextResponse.json(
         {
-          error:
-            "Não há uma guerra válida para recomendar alvos.",
+          error: "Não há uma guerra válida para recomendar alvos.",
         },
         { status: 409 }
       );
@@ -309,11 +184,29 @@ export async function GET(request: Request) {
       });
     }
 
+    // Calcula a melhor quantidade de estrelas recebidas
+    // por cada vila adversária, considerando os ataques aliados.
+    const bestStarsByEnemy = new Map<string, number>();
+
+    for (const ally of allies) {
+      for (const attack of ally.attacks ?? []) {
+        const defenderTag = normalizeTag(attack.defenderTag);
+        const currentBest = bestStarsByEnemy.get(defenderTag) ?? 0;
+
+        bestStarsByEnemy.set(
+          defenderTag,
+          Math.max(currentBest, attack.stars)
+        );
+      }
+    }
+
+    // Utiliza a mesma função estratégica que será usada
+    // posteriormente pela sincronização automática da guerra.
     const { target, reason } = getTarget(
       type,
       player,
-      allies,
-      enemies
+      enemies,
+      bestStarsByEnemy
     );
 
     if (!target) {
