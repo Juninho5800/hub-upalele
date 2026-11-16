@@ -1,10 +1,8 @@
-
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { AppShell } from "@/components/app-shell";
 import { HooksAutoRefresh } from "./hooks-auto-refresh";
 import { HooksManager } from "@/components/hooks-manager";
-
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -29,10 +27,12 @@ export default async function HooksPage() {
   const { data, error } = await supabase
     .from("punishments")
     .select(
-      "id, member_name, punishment_label, duration_wars, reason, return_date, source_note, status, created_at"
+      "id, member_name, punishment_label, duration_wars, reason, return_date, source_note, status, applied_on, created_at"
     )
     .eq("status", "active")
     .order("created_at", { ascending: false });
+
+  const rows = data ?? [];
 
   const role = (profile.role ?? "").trim().toLowerCase();
   const canManage = ["leader", "co_leader", "coleader"].includes(role);
@@ -50,23 +50,18 @@ export default async function HooksPage() {
           <div>
             <h2>Ganchos ativos</h2>
             <p>
-              Datas de origem foram mantidas em observações quando não havia
-              ano informado.
+              Cada guerra de gancho equivale a 2 dias corridos. O retorno é
+              calculado automaticamente a partir da data de aplicação.
             </p>
           </div>
 
-          <span className="badge gold">
-            {data?.length ?? 0} registros
-          </span>
+          <span className="badge gold">{rows.length} registros</span>
         </div>
 
         {error ? (
           <p className="error">{error.message}</p>
         ) : (
-          <HooksManager
-            rows={data ?? []}
-            canManage={canManage}
-          />
+          <HooksManager rows={rows} canManage={canManage} />
         )}
       </section>
     </AppShell>

@@ -1,24 +1,66 @@
 
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const token = process.env.CLASH_OF_CLANS_API_TOKEN;
-  const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
-
-  if (!token || !clanTag) {
-    return NextResponse.json(
-      { error: "Token ou tag do clã não configurado no .env.local." },
-      { status: 500 }
-    );
-  }
-
-  const encodedTag = encodeURIComponent(clanTag.trim());
-
   try {
+    // 1. Validar autenticação
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Não autenticado." },
+        { status: 401 }
+      );
+    }
+
+    // 2. Validar se o perfil está ativo
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error("[CURRENT WAR] Erro ao consultar perfil:", profileError);
+
+      return NextResponse.json(
+        { error: "Não foi possível validar seu perfil." },
+        { status: 500 }
+      );
+    }
+
+    if (!profile || profile.is_active !== true) {
+      return NextResponse.json(
+        { error: "Acesso permitido somente para membros aprovados." },
+        { status: 403 }
+      );
+    }
+
+    // 3. Consultar configuração da API
+    const token = process.env.CLASH_OF_CLANS_API_TOKEN;
+    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
+
+    if (!token || !clanTag) {
+      return NextResponse.json(
+        { error: "Token ou TAG do clã não configurado." },
+        { status: 500 }
+      );
+    }
+
+    const normalizedTag = clanTag.trim().replace(/^#/, "");
+    const encodedTag = encodeURIComponent(`#${normalizedTag}`);
+
+    // 4. Consultar guerra atual
     const response = await fetch(
-      `https://api.clashofclans.com/v1/clans/${encodedTag}/currentwar`,
+      `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -29,11 +71,17 @@ export async function GET() {
     );
 
     if (response.status === 404) {
+      const details = await response.text();
+
+      console.error("[Clash API] current-war:", {
+        status: response.status,
+        details,
+      });
+
       return NextResponse.json({
         connected: true,
         inWar: false,
-        message:
-          "Clã encontrado, mas não há dados de guerra disponíveis. Pode não haver guerra ativa ou os dados podem não estar acessíveis.",
+        message: "A API não encontrou dados de guerra para este clã.",
       });
     }
 
@@ -85,7 +133,9 @@ export async function GET() {
           }
         : null,
     });
-  } catch {
+  } catch (error) {
+    console.error("[Clash API] Erro ao consultar current-war:", error);
+
     return NextResponse.json(
       { error: "Não foi possível conectar à API do Clash of Clans." },
       { status: 502 }

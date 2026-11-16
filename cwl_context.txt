@@ -1,0 +1,2552 @@
+﻿===== ARQUIVOS CWL =====
+
+===== app/api/cwl/lineup/route.ts =====
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { normalizeTag } from "@/lib/clash/strategy";
+
+export const dynamic = "force-dynamic";
+
+async function getLeadershipClient() {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return {
+      supabase,
+      user: null,
+      response: NextResponse.json(
+        { error: "Não autenticado." },
+        { status: 401 }
+      ),
+    };
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("role,is_active")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (
+    profileError ||
+    !profile?.is_active ||
+    !["leader", "co_leader"].includes(profile.role)
+  ) {
+    return {
+      supabase,
+      user: null,
+      response: NextResponse.json(
+        { error: "Sem permissão para administrar a escalação." },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return { supabase, user, response: null };
+}
+
+export async function GET(request: Request) {
+  try {
+    const auth = await getLeadershipClient();
+
+    if (auth.response) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const roundId = searchParams.get("roundId");
+
+    if (!roundId) {
+      return NextResponse.json(
+        { error: "Informe o roundId." },
+        { status: 400 }
+      );
+    }
+
+    const { data: round, error: roundError } = await auth.supabase
+      .from("cwl_rounds")
+      .select("id,season_id,round_number,status,war_id")
+      .eq("id", roundId)
+      .maybeSingle();
+
+    if (roundError) throw roundError;
+
+    if (!round) {
+      return NextResponse.json(
+        { error: "Rodada não encontrada." },
+        { status: 404 }
+      );
+    }
+
+    const [
+      { data: participants, error: participantsError },
+      { data: lineups, error: lineupsError },
+    ] = await Promise.all([
+      auth.supabase
+        .from("cwl_participants")
+        .select(
+          "id,player_tag,player_name,town_hall_level,selection_position,initial_role,attacks_count,total_stars,average_stars,average_destruction,selection_score"
+        )
+        .eq("season_id", round.season_id)
+        .order("selection_position", { ascending: true }),
+
+      auth.supabase
+        .from("cwl_lineups")
+        .select(
+          "id,participant_id,role,slot_position,status,created_at,updated_at"
+        )
+        .eq("round_id", roundId)
+        .order("role", { ascending: true })
+        .order("slot_position", { ascending: true }),
+    ]);
+
+    if (participantsError) throw participantsError;
+    if (lineupsError) throw lineupsError;
+
+    return NextResponse.json({
+      success: true,
+      round,
+      participants: participants ?? [],
+      lineups: lineups ?? [],
+    });
+  } catch (error) {
+    console.error("Erro ao consultar escalação CWL:", error);
+
+    return NextResponse.json(
+      { error: "Não foi possível carregar a escalação." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const auth = await getLeadershipClient();
+
+    if (auth.response) return auth.response;
+
+    let body: {
+      roundId?: string;
+      starters?: string[];
+      reserves?: string[];
+      reason?: string;
+    };
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Corpo da requisição inválido." },
+        { status: 400 }
+      );
+    }
+
+    const roundId = body.roundId?.trim();
+    const starters = body.starters;
+    const reserves = body.reserves;
+    const reason = body.reason?.trim();
+
+    if (
+      !roundId ||
+      !Array.isArray(starters) ||
+      !Array.isArray(reserves) ||
+      starters.length !== 15 ||
+      reserves.length !== 5
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "A escalação precisa conter exatamente 15 titulares e 5 reservas.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!reason || reason.length < 5 || reason.length > 500) {
+      return NextResponse.json(
+        {
+          error:
+            "Informe uma justificativa entre 5 e 500 caracteres para a alteração.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const allTags = [...starters, ...reserves];
+
+    if (
+      allTags.some(
+        (tag) => typeof tag !== "string" || !tag.trim()
+      )
+    ) {
+      return NextResponse.json(
+        { error: "Há tags de jogadores inválidas." },
+        { status: 400 }
+      );
+    }
+
+    const normalizedTags = allTags.map((tag) => normalizeTag(tag));
+
+    if (new Set(normalizedTags).size !== 20) {
+      return NextResponse.json(
+        {
+          error:
+            "Um jogador não pode ocupar mais de uma posição na escalação.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const { data: round, error: roundError } = await auth.supabase
+      .from("cwl_rounds")
+      .select("id,season_id,round_number")
+      .eq("id", roundId)
+      .maybeSingle();
+
+    if (roundError) throw roundError;
+
+    if (!round) {
+      return NextResponse.json(
+        { error: "Rodada não encontrada." },
+        { status: 404 }
+      );
+    }
+
+    const { data: participants, error: participantsError } =
+      await auth.supabase
+        .from("cwl_participants")
+        .select("id,player_tag,player_name")
+        .eq("season_id", round.season_id);
+
+    if (participantsError) throw participantsError;
+
+    const participantByTag = new Map(
+      (participants ?? []).map((participant) => [
+        normalizeTag(participant.player_tag),
+        participant,
+      ])
+    );
+
+    const missingTags = normalizedTags.filter(
+      (tag) => !participantByTag.has(tag)
+    );
+
+    if (missingTags.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Existem jogadores que não estão cadastrados como participantes desta temporada.",
+          missingTags,
+        },
+        { status: 400 }
+      );
+    }
+
+    const { data: previousLineups, error: previousError } =
+      await auth.supabase
+        .from("cwl_lineups")
+        .select("participant_id,role,slot_position,status")
+        .eq("round_id", roundId);
+
+    if (previousError) throw previousError;
+
+    const beforeState = (previousLineups ?? []).map((item) => ({
+      participantId: item.participant_id,
+      role: item.role,
+      slotPosition: item.slot_position,
+      status: item.status,
+    }));
+
+    const assignments = [
+      ...starters.map((tag, index) => ({
+        season_id: round.season_id,
+        round_id: roundId,
+        participant_id: participantByTag.get(normalizeTag(tag))!.id,
+        role: "starter" as const,
+        slot_position: index + 1,
+        status: "active" as const,
+        updated_at: new Date().toISOString(),
+      })),
+      ...reserves.map((tag, index) => ({
+        season_id: round.season_id,
+        round_id: roundId,
+        participant_id: participantByTag.get(normalizeTag(tag))!.id,
+        role: "reserve" as const,
+        slot_position: index + 1,
+        status: "active" as const,
+        updated_at: new Date().toISOString(),
+      })),
+    ];
+
+    // Desativa primeiro para evitar conflitos nas posições únicas ativas.
+    const { error: deactivateError } = await auth.supabase
+      .from("cwl_lineups")
+      .update({
+        status: "inactive",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("round_id", roundId);
+
+    if (deactivateError) throw deactivateError;
+
+    // Reaproveita os registros existentes e cria os que ainda não existem.
+    const { error: saveError } = await auth.supabase
+      .from("cwl_lineups")
+      .upsert(assignments, {
+        onConflict: "round_id,participant_id",
+      });
+
+    if (saveError) throw saveError;
+
+    const afterState = assignments.map((item) => ({
+      participantId: item.participant_id,
+      role: item.role,
+      slotPosition: item.slot_position,
+      status: item.status,
+    }));
+
+    const { error: auditError } = await auth.supabase
+      .from("cwl_lineup_audit")
+      .insert({
+        season_id: round.season_id,
+        round_id: roundId,
+        action_type: "manual_adjustment",
+        before_state: beforeState,
+        after_state: afterState,
+        reason,
+        performed_by: auth.user!.id,
+      });
+
+    if (auditError) {
+      console.error("Escalação salva, mas a auditoria falhou:", auditError);
+
+      return NextResponse.json(
+        {
+          success: false,
+          saved: true,
+          error:
+            "A escalação foi salva, mas não foi possível registrar a auditoria. Avise a equipe técnica antes de realizar outra alteração.",
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: `Escalação da rodada ${round.round_number} salva com sucesso.`,
+      starters: 15,
+      reserves: 5,
+    });
+  } catch (error) {
+    console.error("Erro ao salvar escalação CWL:", error);
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível salvar a escalação.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+===== app/api/cwl/process/route.ts =====
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { normalizeTag } from "@/lib/clash/strategy";
+
+export const dynamic = "force-dynamic";
+
+async function getLeadershipClient() {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return {
+      supabase,
+      user: null,
+      response: NextResponse.json(
+        { error: "NÃ£o autenticado." },
+        { status: 401 }
+      ),
+    };
+  }
+
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("role,is_active")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (
+    error ||
+    !profile?.is_active ||
+    !["leader", "co_leader"].includes(profile.role)
+  ) {
+    return {
+      supabase,
+      user: null,
+      response: NextResponse.json(
+        { error: "Sem permissÃ£o para processar a CWL." },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return { supabase, user, response: null };
+}
+
+export async function POST(request: Request) {
+  const auth = await getLeadershipClient();
+
+  if (auth.response) return auth.response;
+
+  let processingRunId: string | null = null;
+  let roundId = "";
+
+  try {
+    const body = await request.json();
+    roundId = typeof body.roundId === "string" ? body.roundId.trim() : "";
+
+    if (!roundId) {
+      return NextResponse.json(
+        { error: "Informe o roundId." },
+        { status: 400 }
+      );
+    }
+
+    const { data: round, error: roundError } = await auth.supabase
+      .from("cwl_rounds")
+      .select("id,season_id,round_number,war_id,status")
+      .eq("id", roundId)
+      .maybeSingle();
+
+    if (roundError) throw roundError;
+
+    if (!round || !round.war_id) {
+      return NextResponse.json(
+        { error: "A rodada ainda nÃ£o possui uma guerra sincronizada." },
+        { status: 409 }
+      );
+    }
+
+    const { data: war, error: warError } = await auth.supabase
+      .from("wars")
+      .select("id,status,war_end")
+      .eq("id", round.war_id)
+      .maybeSingle();
+
+    if (warError) throw warError;
+
+    if (!war || war.status !== "ended") {
+      return NextResponse.json(
+        { error: "O processamento sÃ³ pode ocorrer apÃ³s o encerramento da guerra." },
+        { status: 409 }
+      );
+    }
+
+    const { data: activeLineups, error: lineupError } = await auth.supabase
+      .from("cwl_lineups")
+      .select("participant_id,role,slot_position")
+      .eq("round_id", roundId)
+      .eq("status", "active");
+
+    if (lineupError) throw lineupError;
+
+    if (!activeLineups?.length) {
+      return NextResponse.json(
+        { error: "A rodada ainda nÃ£o possui escalaÃ§Ã£o ativa." },
+        { status: 409 }
+      );
+    }
+
+    const participantIds = activeLineups.map((item) => item.participant_id);
+
+    const { data: participants, error: participantsError } =
+      await auth.supabase
+        .from("cwl_participants")
+        .select("id,player_tag,player_name")
+        .eq("season_id", round.season_id)
+        .in("id", participantIds);
+
+    if (participantsError) throw participantsError;
+
+    const { data: attacks, error: attacksError } = await auth.supabase
+      .from("war_attacks")
+      .select(
+        "attacker_tag,attacker_name,defender_tag,defender_name,stars,destruction_percent"
+      )
+      .eq("war_id", war.id);
+
+    if (attacksError) throw attacksError;
+
+    const attacksByPlayer = new Map<string, typeof attacks>();
+    const defensesByPlayer = new Map<string, typeof attacks>();
+
+    for (const attack of attacks ?? []) {
+      const attackerTag = attack.attacker_tag
+        ? normalizeTag(attack.attacker_tag)
+        : "";
+      const defenderTag = attack.defender_tag
+        ? normalizeTag(attack.defender_tag)
+        : "";
+
+      if (attackerTag) {
+        const current = attacksByPlayer.get(attackerTag) ?? [];
+        current.push(attack);
+        attacksByPlayer.set(attackerTag, current);
+      }
+
+      if (defenderTag) {
+        const current = defensesByPlayer.get(defenderTag) ?? [];
+        current.push(attack);
+        defensesByPlayer.set(defenderTag, current);
+      }
+    }
+
+    const { data: run, error: runError } = await auth.supabase
+      .from("cwl_processing_runs")
+      .insert({
+        round_id: roundId,
+        status: "syncing",
+        started_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+
+    if (runError) throw runError;
+    processingRunId = run.id;
+
+    await auth.supabase
+      .from("cwl_rounds")
+      .update({ status: "processing", updated_at: new Date().toISOString() })
+      .eq("id", roundId);
+
+    await auth.supabase
+      .from("cwl_processing_runs")
+      .update({ status: "validating" })
+      .eq("id", processingRunId);
+
+    const performanceRows = (participants ?? []).map((participant) => {
+      const tag = normalizeTag(participant.player_tag);
+      const playerAttacks = attacksByPlayer.get(tag) ?? [];
+      const playerDefenses = defensesByPlayer.get(tag) ?? [];
+
+      // CWL: mais de uma defesa recebida indica inconsistÃªncia nos dados.
+      if (playerDefenses.length > 1) {
+        throw new Error(
+          `Mais de um ataque defensivo encontrado para ${participant.player_name}.`
+        );
+      }
+
+      // Cada participante possui um ataque prÃ³prio por guerra.
+      const ownAttack = playerAttacks.length === 1 ? playerAttacks[0] : null;
+
+      // Sem ataque recebido: destruiÃ§Ã£o sofrida = 0% e Ã­ndice D = 100.
+      const receivedAttack =
+        playerDefenses.length === 1 ? playerDefenses[0] : null;
+
+      const attackConfirmed =
+        Boolean(ownAttack) &&
+        ownAttack!.destruction_percent !== null &&
+        ownAttack!.destruction_percent !== undefined;
+
+      const defenseConfirmed =
+        playerDefenses.length === 0 ||
+        (
+          Boolean(receivedAttack) &&
+          receivedAttack!.destruction_percent !== null &&
+          receivedAttack!.destruction_percent !== undefined
+        );
+
+      const attackDestruction = attackConfirmed
+        ? Number(ownAttack!.destruction_percent)
+        : null;
+
+      const defenseDestruction =
+        playerDefenses.length === 0
+          ? 0
+          : defenseConfirmed
+            ? Number(receivedAttack!.destruction_percent)
+            : null;
+
+      const attackIndex = attackDestruction;
+
+      const defenseIndex =
+        defenseDestruction === null
+          ? null
+          : 100 - defenseDestruction;
+
+      const adIndex =
+        attackIndex === null || defenseIndex === null
+          ? null
+          : Number((attackIndex + defenseIndex).toFixed(2));
+
+      return {
+        round_id: roundId,
+        participant_id: participant.id,
+        attack_confirmed: attackConfirmed,
+        attack_stars: attackConfirmed ? ownAttack!.stars : null,
+        attack_destruction: attackDestruction,
+        defense_confirmed: defenseConfirmed,
+        defense_stars:
+          playerDefenses.length === 0
+            ? 0
+            : defenseConfirmed
+              ? receivedAttack!.stars
+              : null,
+        defense_destruction: defenseDestruction,
+        attack_index: attackIndex,
+        defense_index: defenseIndex,
+        ad_index: adIndex,
+        data_complete: attackConfirmed && defenseConfirmed,
+        calculated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+    });
+    const { error: performanceError } = await auth.supabase
+      .from("cwl_performance")
+      .upsert(performanceRows, {
+        onConflict: "round_id,participant_id",
+      });
+
+    if (performanceError) throw performanceError;
+
+    const completeCount = performanceRows.filter(
+      (item) => item.data_complete
+    ).length;
+
+    const pendingCount = performanceRows.length - completeCount;
+
+    const { error: finishRunError } = await auth.supabase
+      .from("cwl_processing_runs")
+      .update({
+        status: "processed",
+        completed_at: new Date().toISOString(),
+        error_message: null,
+      })
+      .eq("id", processingRunId);
+
+    if (finishRunError) throw finishRunError;
+
+    const { error: finishRoundError } = await auth.supabase
+      .from("cwl_rounds")
+      .update({
+        status: "processed",
+        processed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", roundId);
+
+    if (finishRoundError) throw finishRoundError;
+
+    return NextResponse.json({
+      success: true,
+      roundNumber: round.round_number,
+      playersProcessed: performanceRows.length,
+      completeCount,
+      pendingCount,
+      message:
+        pendingCount > 0
+          ? "Processamento concluÃ­do com jogadores aguardando dados de ataque ou defesa."
+          : "Desempenho da rodada processado com sucesso.",
+    });
+  } catch (error) {
+    console.error("Erro ao processar desempenho CWL:", error);
+
+    if (processingRunId) {
+      await auth.supabase
+        .from("cwl_processing_runs")
+        .update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          error_message:
+            error instanceof Error ? error.message : "Erro inesperado.",
+        })
+        .eq("id", processingRunId);
+    }
+
+    if (roundId) {
+      await auth.supabase
+        .from("cwl_rounds")
+        .update({ status: "failed", updated_at: new Date().toISOString() })
+        .eq("id", roundId);
+    }
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "NÃ£o foi possÃ­vel processar o desempenho.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+===== app/api/cwl/performance/route.ts =====
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+
+export const dynamic = "force-dynamic";
+
+export async function GET(request: Request) {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role,is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (
+      !profile?.is_active ||
+      !["leader", "co_leader"].includes(profile.role)
+    ) {
+      return NextResponse.json({ error: "Sem permissão." }, { status: 403 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const roundId = searchParams.get("roundId");
+
+    if (!roundId) {
+      return NextResponse.json(
+        { error: "Informe o roundId." },
+        { status: 400 }
+      );
+    }
+
+    const { data: round, error: roundError } = await supabase
+      .from("cwl_rounds")
+      .select("id,season_id,round_number,status,war_id")
+      .eq("id", roundId)
+      .maybeSingle();
+
+    if (roundError) throw roundError;
+
+    if (!round) {
+      return NextResponse.json(
+        { error: "Rodada não encontrada." },
+        { status: 404 }
+      );
+    }
+
+    const [
+      { data: participants, error: participantsError },
+      { data: lineups, error: lineupsError },
+      { data: performance, error: performanceError },
+    ] = await Promise.all([
+      supabase
+        .from("cwl_participants")
+        .select("id,player_name,player_tag,town_hall_level,selection_position")
+        .eq("season_id", round.season_id),
+
+      supabase
+        .from("cwl_lineups")
+        .select("participant_id,role,slot_position,status")
+        .eq("round_id", roundId),
+
+      supabase
+        .from("cwl_performance")
+        .select(
+          "participant_id,attack_confirmed,attack_stars,attack_destruction,defense_confirmed,defense_stars,defense_destruction,attack_index,defense_index,ad_index,is_protected,data_complete,rotation_score,calculated_at"
+        )
+        .eq("round_id", roundId),
+    ]);
+
+    if (participantsError) throw participantsError;
+    if (lineupsError) throw lineupsError;
+    if (performanceError) throw performanceError;
+
+    const participantMap = new Map(
+      (participants ?? []).map((item) => [item.id, item])
+    );
+
+    const lineupMap = new Map(
+      (lineups ?? []).map((item) => [item.participant_id, item])
+    );
+
+    const performanceMap = new Map(
+      (performance ?? []).map((item) => [item.participant_id, item])
+    );
+
+    const players = (participants ?? [])
+      .filter((player) => lineupMap.has(player.id))
+      .map((player) => ({
+        ...player,
+        lineup: lineupMap.get(player.id),
+        performance: performanceMap.get(player.id) ?? null,
+      }))
+      .sort((a, b) => {
+        const aScore = a.performance?.ad_index;
+        const bScore = b.performance?.ad_index;
+
+        if (aScore == null && bScore == null) return 0;
+        if (aScore == null) return 1;
+        if (bScore == null) return -1;
+        return Number(bScore) - Number(aScore);
+      });
+
+    return NextResponse.json({
+      success: true,
+      round,
+      players,
+      processed: (performance ?? []).length > 0,
+    });
+  } catch (error) {
+    console.error("Erro ao consultar desempenho CWL:", error);
+
+    return NextResponse.json(
+      { error: "Não foi possível consultar o desempenho." },
+      { status: 500 }
+    );
+  }
+}
+
+===== app/api/cwl/overview/route.ts =====
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Não autenticado." },
+        { status: 401 }
+      );
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role,is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (
+      !profile?.is_active ||
+      !["leader", "co_leader"].includes(profile.role)
+    ) {
+      return NextResponse.json(
+        { error: "Sem permissão." },
+        { status: 403 }
+      );
+    }
+
+    const { data: seasons, error: seasonError } = await supabase
+      .from("cwl_seasons")
+      .select("id,season,league_name,group_number,selection_month,status")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (seasonError) throw seasonError;
+
+    const season = seasons?.[0];
+
+    if (!season) {
+      return NextResponse.json({
+        success: true,
+        season: null,
+        rounds: [],
+      });
+    }
+
+    const { data: rounds, error: roundsError } = await supabase
+      .from("cwl_rounds")
+      .select("id,round_number,war_id,status,processed_at")
+      .eq("season_id", season.id)
+      .order("round_number", { ascending: true });
+
+    if (roundsError) throw roundsError;
+
+    const warIds = (rounds ?? [])
+      .map((round) => round.war_id)
+      .filter((id): id is string => Boolean(id));
+
+    let wars: any[] = [];
+
+    if (warIds.length > 0) {
+      const { data, error } = await supabase
+        .from("wars")
+        .select(
+          "id,status,clan_stars,opponent_stars,team_size,war_start,war_end,raw_payload"
+        )
+        .in("id", warIds);
+
+      if (error) throw error;
+      wars = data ?? [];
+    }
+
+    const warById = new Map(wars.map((war) => [war.id, war]));
+
+    const result = (rounds ?? []).map((round) => {
+      const war = round.war_id
+        ? warById.get(round.war_id)
+        : null;
+
+      const payload = war?.raw_payload as any;
+      const opponent = payload?.opponent;
+
+      return {
+        id: round.id,
+        roundNumber: round.round_number,
+        status: round.status,
+        warId: round.war_id,
+        warStatus: war?.status ?? null,
+        opponentName: opponent?.name ?? null,
+        opponentTag: opponent?.tag ?? null,
+        clanStars: war?.clan_stars ?? null,
+        opponentStars: war?.opponent_stars ?? null,
+        teamSize: war?.team_size ?? null,
+        warStart: war?.war_start ?? null,
+        warEnd: war?.war_end ?? null,
+      };
+    });
+
+    return NextResponse.json({
+      success: true,
+      season,
+      rounds: result,
+    });
+  } catch (error) {
+    console.error("Erro ao consultar painel CWL:", error);
+
+    return NextResponse.json(
+      { error: "Não foi possível carregar o painel da CWL." },
+      { status: 500 }
+    );
+  }
+}
+
+===== app/api/cwl/sync/route.ts =====
+import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { normalizeTag } from "@/lib/clash/strategy";
+import {
+  getCwlGroup,
+  getCwlWar,
+  orientCwlWar,
+  parseCwlDate,
+} from "@/lib/cwl/clash-api";
+
+export const dynamic = "force-dynamic";
+
+function mapWarStatus(state: string) {
+  switch (state) {
+    case "preparation":
+      return "preparation";
+    case "inWar":
+      return "in_war";
+    case "warEnded":
+      return "ended";
+    default:
+      return "unknown";
+  }
+}
+
+function mapRoundStatus(state: string) {
+  switch (state) {
+    case "preparation":
+      return "scheduled";
+    case "inWar":
+      return "in_progress";
+    case "warEnded":
+      return "completed";
+    default:
+      return "scheduled";
+  }
+}
+
+export async function POST() {
+  try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Não autenticado." },
+        { status: 401 }
+      );
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role,is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (
+      !profile ||
+      !profile.is_active ||
+      !["leader", "co_leader"].includes(profile.role)
+    ) {
+      return NextResponse.json(
+        { error: "Sem permissão para sincronizar a CWL." },
+        { status: 403 }
+      );
+    }
+
+    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
+
+    if (!clanTag || !process.env.CLASH_OF_CLANS_API_TOKEN) {
+      return NextResponse.json(
+        { error: "Configuração da API do Clash of Clans ausente." },
+        { status: 500 }
+      );
+    }
+
+    const group = await getCwlGroup(clanTag);
+
+    if (!group.season || !Array.isArray(group.rounds)) {
+      return NextResponse.json(
+        { error: "A API retornou dados inválidos da liga." },
+        { status: 502 }
+      );
+    }
+
+    if (group.rounds.length !== 7) {
+      return NextResponse.json(
+        {
+          error: `A API retornou ${group.rounds.length} rodadas. Esperávamos 7.`,
+        },
+        { status: 502 }
+      );
+    }
+
+    const seasonMonth = group.season.match(/^(\d{4})-(\d{2})/)
+      ? `${group.season.slice(0, 7)}-01`
+      : null;
+
+    const { data: season, error: seasonError } = await supabase
+      .from("cwl_seasons")
+      .upsert(
+        {
+  season: group.season,
+  selection_month: seasonMonth,
+  updated_at: new Date().toISOString(),
+},
+{ onConflict: "season" }
+)
+.select("id,status")
+.single();
+
+    if (seasonError || !season) {
+      throw new Error(
+        `Não foi possível salvar a temporada: ${seasonError?.message ?? "registro não retornado"}`
+      );
+    }
+
+    const expectedTag = normalizeTag(clanTag);
+    const summary = {
+      season: group.season,
+      roundsFound: 0,
+      warsSaved: 0,
+      attacksSaved: 0,
+      participantsSaved: 0,
+      warnings: [] as string[],
+    };
+
+    const roundResults: { status: string; warId: string | null }[] = [];
+
+    for (let index = 0; index < 7; index++) {
+      const round = group.rounds[index];
+      const warTags = (round?.warTags ?? []).filter(
+        (tag) => tag && normalizeTag(tag) !== "0"
+      );
+
+      let selectedWar:
+        | { tag: string; war: Awaited<ReturnType<typeof getCwlWar>> }
+        | null = null;
+
+      let hadLookupError = false;
+
+      for (const warTag of warTags) {
+        try {
+          const candidate = await getCwlWar(warTag);
+
+          const belongsToClan =
+            normalizeTag(candidate.clan.tag) === expectedTag ||
+            normalizeTag(candidate.opponent.tag) === expectedTag;
+
+          if (belongsToClan) {
+            selectedWar = {
+              tag: warTag,
+              war: orientCwlWar(candidate, clanTag),
+            };
+            break;
+          }
+        } catch {
+          hadLookupError = true;
+        }
+      }
+
+      if (!selectedWar) {
+        if (hadLookupError && warTags.length > 0) {
+          summary.warnings.push(
+            `Rodada ${index + 1}: não foi possível consultar todas as guerras disponíveis.`
+          );
+          continue;
+        }
+
+        const { error: roundError } = await supabase
+          .from("cwl_rounds")
+          .upsert(
+            {
+              season_id: season.id,
+              round_number: index + 1,
+              war_id: null,
+              status: "scheduled",
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "season_id,round_number" }
+          );
+
+        if (roundError) {
+          summary.warnings.push(
+            `Rodada ${index + 1}: ${roundError.message}`
+          );
+        }
+
+        roundResults.push({ status: "scheduled", warId: null });
+        continue;
+      }
+
+      const { tag, war } = selectedWar;
+      const warStatus = mapWarStatus(war.state);
+      const roundStatus = mapRoundStatus(war.state);
+      const externalWarTag = `CWL:${normalizeTag(tag)}`;
+
+      const { data: savedWar, error: warError } = await supabase
+        .from("wars")
+        .upsert(
+          {
+            external_war_tag: externalWarTag,
+            war_type: "cwl",
+            status: warStatus,
+            preparation_start: parseCwlDate(war.preparationStartTime),
+            war_start: parseCwlDate(war.startTime),
+            war_end: parseCwlDate(war.endTime),
+            team_size: war.teamSize ?? war.clan.members?.length ?? null,
+            clan_stars: war.clan.stars ?? 0,
+            opponent_stars: war.opponent.stars ?? 0,
+            raw_payload: war,
+            last_synced_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "external_war_tag" }
+        )
+        .select("id")
+        .single();
+
+      if (warError || !savedWar) {
+        summary.warnings.push(
+          `Rodada ${index + 1}: erro ao salvar guerra: ${warError?.message ?? "registro não retornado"}`
+        );
+        continue;
+      }
+
+      const { error: roundError } = await supabase
+        .from("cwl_rounds")
+        .upsert(
+          {
+            season_id: season.id,
+            round_number: index + 1,
+            war_id: savedWar.id,
+            status: roundStatus,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "season_id,round_number" }
+        );
+
+      if (roundError) {
+        summary.warnings.push(
+          `Rodada ${index + 1}: erro ao vincular guerra: ${roundError.message}`
+        );
+        continue;
+      }
+
+      summary.roundsFound++;
+      summary.warsSaved++;
+      roundResults.push({ status: roundStatus, warId: savedWar.id });
+
+      const clanMembers = war.clan.members ?? [];
+      const opponentMembers = war.opponent.members ?? [];
+
+      if (clanMembers.length > 0) {
+        const participants = clanMembers.map((member) => ({
+          season_id: season.id,
+          player_tag: member.tag,
+          player_name: member.name,
+          town_hall_level: member.townhallLevel ?? null,
+        }));
+
+        const { error: participantError } = await supabase
+          .from("cwl_participants")
+          .upsert(participants, {
+            onConflict: "season_id,player_tag",
+          });
+
+        if (participantError) {
+          summary.warnings.push(
+            `Rodada ${index + 1}: erro ao salvar participantes: ${participantError.message}`
+          );
+        } else {
+          summary.participantsSaved += participants.length;
+        }
+      }
+
+      const allMembers = [
+        ...clanMembers.map((member) => ({
+          member,
+          sideMembers: opponentMembers,
+        })),
+        ...opponentMembers.map((member) => ({
+          member,
+          sideMembers: clanMembers,
+        })),
+      ];
+
+      const attacks = allMembers.flatMap(({ member, sideMembers }) =>
+        (member.attacks ?? []).map((attack) => {
+          const defender = sideMembers.find(
+            (item) =>
+              normalizeTag(item.tag) === normalizeTag(attack.defenderTag)
+          );
+
+          return {
+            war_id: savedWar.id,
+            attacker_tag: attack.attackerTag || member.tag,
+            attacker_name: member.name,
+            defender_tag: attack.defenderTag,
+            defender_name: defender?.name ?? null,
+            attacker_map_position: member.mapPosition ?? null,
+            defender_map_position: defender?.mapPosition ?? null,
+            stars: attack.stars,
+            destruction_percent: attack.destructionPercentage,
+            attack_order: attack.order,
+            external_attack_key: `${normalizeTag(attack.attackerTag || member.tag)}:${attack.order}`,
+            raw_payload: attack,
+          };
+        })
+      );
+
+      if (attacks.length > 0) {
+        const { error: attacksError } = await supabase
+          .from("war_attacks")
+          .upsert(attacks, {
+            onConflict: "war_id,external_attack_key",
+          });
+
+        if (attacksError) {
+          summary.warnings.push(
+            `Rodada ${index + 1}: erro ao salvar ataques: ${attacksError.message}`
+          );
+        } else {
+          summary.attacksSaved += attacks.length;
+        }
+      }
+    }
+
+    const allRoundsCompleted =
+      roundResults.length === 7 &&
+      roundResults.every((round) => round.status === "completed");
+
+    const anyRoundStarted = roundResults.some(
+      (round) =>
+        round.status === "in_progress" || round.status === "completed"
+    );
+
+   const currentSeasonStatus = season.status;
+
+const seasonStatus =
+  currentSeasonStatus === "cancelled"
+    ? "cancelled"
+    : currentSeasonStatus === "completed" || allRoundsCompleted
+      ? "completed"
+      : anyRoundStarted
+        ? "active"
+        : currentSeasonStatus;
+
+    const { error: updateSeasonError } = await supabase
+      .from("cwl_seasons")
+      .update({
+        status: seasonStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", season.id);
+
+    if (updateSeasonError) {
+      summary.warnings.push(
+        `Temporada: erro ao atualizar status: ${updateSeasonError.message}`
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      ...summary,
+      seasonStatus,
+    });
+  } catch (error)
+  {
+    if (
+  error instanceof Error &&
+  error.message.includes("Clash API retornou 404")
+) {
+  return NextResponse.json({
+    success: true,
+    available: false,
+    message:
+      "Não existe uma CWL disponível para sincronização no momento. Aguarde a próxima temporada.",
+  });
+}
+    console.error("Erro na sincronização CWL:", error);
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Erro inesperado ao sincronizar a CWL.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+===== components/cwl-lineup-panel.tsx =====
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+type Round = {
+  id: string;
+  roundNumber: number;
+  status: string;
+  opponentName: string | null;
+};
+
+type Participant = {
+  id: string;
+  player_tag: string;
+  player_name: string;
+  town_hall_level: number | null;
+  selection_position: number | null;
+  initial_role: string | null;
+  attacks_count: number | null;
+  total_stars: number | null;
+  average_stars: number | null;
+  average_destruction: number | null;
+  selection_score: number | null;
+};
+
+type Lineup = {
+  id: string;
+  participant_id: string;
+  role: "starter" | "reserve";
+  slot_position: number;
+  status: "active" | "inactive";
+};
+
+type LineupResponse = {
+  round: Round | null;
+  participants: Participant[];
+  lineups: Lineup[];
+  error?: string;
+};
+
+export function CwlLineupPanel() {
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [roundId, setRoundId] = useState("");
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [starters, setStarters] = useState<string[]>([]);
+  const [reserves, setReserves] = useState<string[]>([]);
+  const [reason, setReason] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [search, setSearch] = useState("");
+
+  const loadRounds = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/cwl/overview", {
+        cache: "no-store",
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Não foi possível carregar as rodadas.");
+      }
+
+      const availableRounds: Round[] = result.rounds ?? [];
+      setRounds(availableRounds);
+
+      if (availableRounds.length > 0) {
+        setRoundId((current) =>
+          availableRounds.some((round) => round.id === current)
+            ? current
+            : availableRounds[0].id
+        );
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao carregar as rodadas."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadLineup = useCallback(async (selectedRoundId: string) => {
+    if (!selectedRoundId) return;
+
+    setLoading(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/cwl/lineup?roundId=${encodeURIComponent(selectedRoundId)}`,
+        { cache: "no-store" }
+      );
+      const result: LineupResponse = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Não foi possível carregar a escalação.");
+      }
+
+      const loadedParticipants = result.participants ?? [];
+      const activeLineups = (result.lineups ?? []).filter(
+        (item) => item.status === "active"
+      );
+
+      setParticipants(loadedParticipants);
+
+      if (activeLineups.length > 0) {
+        setStarters(
+          activeLineups
+            .filter((item) => item.role === "starter")
+            .sort((a, b) => a.slot_position - b.slot_position)
+            .map((item) =>
+              loadedParticipants.find(
+                (participant) => participant.id === item.participant_id
+              )?.player_tag
+            )
+            .filter((tag): tag is string => Boolean(tag))
+        );
+
+        setReserves(
+          activeLineups
+            .filter((item) => item.role === "reserve")
+            .sort((a, b) => a.slot_position - b.slot_position)
+            .map((item) =>
+              loadedParticipants.find(
+                (participant) => participant.id === item.participant_id
+              )?.player_tag
+            )
+            .filter((tag): tag is string => Boolean(tag))
+        );
+      } else {
+        // Sugestão inicial baseada na classificação já cadastrada.
+        // Ela é apenas uma proposta editável, nunca uma confirmação automática.
+        const ordered = [...loadedParticipants].sort((a, b) => {
+          const aPosition = a.selection_position ?? Number.MAX_SAFE_INTEGER;
+          const bPosition = b.selection_position ?? Number.MAX_SAFE_INTEGER;
+          return aPosition - bPosition;
+        });
+
+        setStarters(
+          ordered
+            .filter((player) => player.initial_role === "starter")
+            .slice(0, 15)
+            .map((player) => player.player_tag)
+        );
+
+        setReserves(
+          ordered
+            .filter((player) => player.initial_role === "reserve")
+            .slice(0, 5)
+            .map((player) => player.player_tag)
+        );
+      }
+
+      setReason("");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao carregar a escalação."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRounds();
+  }, [loadRounds]);
+
+  useEffect(() => {
+    if (roundId) void loadLineup(roundId);
+  }, [roundId, loadLineup]);
+
+  const selectedTags = useMemo(
+    () => new Set([...starters, ...reserves]),
+    [starters, reserves]
+  );
+
+  const filteredParticipants = useMemo(() => {
+    const term = search.trim().toLocaleLowerCase("pt-BR");
+
+    return participants
+      .filter(
+        (player) =>
+          !term ||
+          player.player_name.toLocaleLowerCase("pt-BR").includes(term) ||
+          player.player_tag.toLocaleLowerCase("pt-BR").includes(term)
+      )
+      .sort((a, b) => {
+        const aPosition = a.selection_position ?? Number.MAX_SAFE_INTEGER;
+        const bPosition = b.selection_position ?? Number.MAX_SAFE_INTEGER;
+        return aPosition - bPosition;
+      });
+  }, [participants, search]);
+
+  function addStarter(tag: string) {
+    if (selectedTags.has(tag) || starters.length >= 15) return;
+    setStarters((current) => [...current, tag]);
+  }
+
+  function addReserve(tag: string) {
+    if (selectedTags.has(tag) || reserves.length >= 5) return;
+    setReserves((current) => [...current, tag]);
+  }
+
+  function removePlayer(tag: string) {
+    setStarters((current) => current.filter((item) => item !== tag));
+    setReserves((current) => current.filter((item) => item !== tag));
+  }
+
+  function movePlayer(tag: string, destination: "starter" | "reserve") {
+    removePlayer(tag);
+
+    if (destination === "starter" && starters.length < 15) {
+      setStarters((current) => [...current, tag]);
+    }
+
+    if (destination === "reserve" && reserves.length < 5) {
+      setReserves((current) => [...current, tag]);
+    }
+  }
+
+  async function saveLineup() {
+    setError("");
+    setMessage("");
+
+    if (starters.length !== 15 || reserves.length !== 5) {
+      setError("Complete os 15 titulares e as 5 reservas antes de salvar.");
+      return;
+    }
+
+    if (reason.trim().length < 5) {
+      setError("Informe uma justificativa com pelo menos 5 caracteres.");
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const response = await fetch("/api/cwl/lineup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roundId,
+          starters,
+          reserves,
+          reason: reason.trim(),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Não foi possível salvar a escalação.");
+      }
+
+      setMessage(result.message || "Escalação salva com sucesso.");
+      await loadLineup(roundId);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao salvar a escalação."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const currentRound = rounds.find((round) => round.id === roundId);
+
+  return (
+    <section className="card" style={{ marginTop: 24 }}>
+      <div className="section-head">
+        <div>
+          <span className="badge gold">GESTÃO DE ELENCO</span>
+          <h2>Escalação da CWL</h2>
+          <p className="muted">
+            Defina os 15 titulares e as 5 reservas de cada confronto.
+          </p>
+        </div>
+      </div>
+
+      {error && <p className="error">{error}</p>}
+      {message && <p>{message}</p>}
+
+      {loading && <p className="muted">Carregando escalação...</p>}
+
+      {!loading && rounds.length === 0 && (
+        <p className="muted">
+          Nenhuma rodada cadastrada. Sincronize a temporada CWL para liberar a
+          gestão de elenco.
+        </p>
+      )}
+
+      {!loading && rounds.length > 0 && (
+        <>
+          <div style={{ marginBottom: 18 }}>
+            <label htmlFor="cwl-round-select">Rodada</label>
+            <select
+              id="cwl-round-select"
+              className="input"
+              value={roundId}
+              onChange={(event) => setRoundId(event.target.value)}
+            >
+              {rounds.map((round) => (
+                <option key={round.id} value={round.id}>
+                  Rodada {round.roundNumber}
+                  {round.opponentName ? ` · ${round.opponentName}` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {currentRound && (
+            <p className="muted">
+              Confronto: {currentRound.opponentName ?? "Aguardando adversário"}
+            </p>
+          )}
+
+          {participants.length === 0 ? (
+            <p className="muted">
+              Ainda não há participantes cadastrados nesta temporada. Verifique
+              a sincronização da CWL.
+            </p>
+          ) : (
+            <>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: 14,
+                  margin: "18px 0",
+                }}
+              >
+                <div className="stat-card">
+                  <span>Titulares selecionados</span>
+                  <strong>{starters.length}/15</strong>
+                </div>
+                <div className="stat-card">
+                  <span>Reservas selecionadas</span>
+                  <strong>{reserves.length}/5</strong>
+                </div>
+                <div className="stat-card">
+                  <span>Jogadores disponíveis</span>
+                  <strong>{participants.length - selectedTags.size}</strong>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                  gap: 16,
+                }}
+              >
+                <div>
+                  <h3>Titulares · {starters.length}/15</h3>
+                  {starters.map((tag, index) => {
+                    const player = participants.find(
+                      (item) => item.player_tag === tag
+                    );
+
+                    return (
+                      <div
+                        key={tag}
+                        className="stat-card"
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 8,
+                          gap: 8,
+                        }}
+                      >
+                        <span>
+                          <strong>{index + 1}.</strong>{" "}
+                          {player?.player_name ?? tag}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => removePlayer(tag)}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div>
+                  <h3>Reservas · {reserves.length}/5</h3>
+                  {reserves.map((tag, index) => {
+                    const player = participants.find(
+                      (item) => item.player_tag === tag
+                    );
+
+                    return (
+                      <div
+                        key={tag}
+                        className="stat-card"
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 8,
+                          gap: 8,
+                        }}
+                      >
+                        <span>
+                          <strong>{index + 1}.</strong>{" "}
+                          {player?.player_name ?? tag}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => removePlayer(tag)}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 24 }}>
+                <h3>Participantes disponíveis</h3>
+                <input
+                  className="input"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Buscar jogador por nome ou tag..."
+                />
+
+                <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+                  {filteredParticipants.map((player) => {
+                    const selected = selectedTags.has(player.player_tag);
+
+                    return (
+                      <div
+                        key={player.id}
+                        className="stat-card"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          flexWrap: "wrap",
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <strong>{player.player_name}</strong>
+                          <p className="muted" style={{ margin: 0 }}>
+                            {player.player_tag}
+                            {player.town_hall_level
+                              ? ` · CV ${player.town_hall_level}`
+                              : ""}
+                            {player.selection_position
+                              ? ` · Posição mensal ${player.selection_position}`
+                              : ""}
+                          </p>
+                        </div>
+
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {selected ? (
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => removePlayer(player.player_tag)}
+                            >
+                              Remover
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="btn"
+                                disabled={starters.length >= 15}
+                                onClick={() => addStarter(player.player_tag)}
+                              >
+                                Titular
+                              </button>
+                              <button
+                                type="button"
+                                className="btn"
+                                disabled={reserves.length >= 5}
+                                onClick={() => addReserve(player.player_tag)}
+                              >
+                                Reserva
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 22 }}>
+                <label htmlFor="cwl-lineup-reason">
+                  Justificativa da escalação ou alteração
+                </label>
+                <textarea
+                  id="cwl-lineup-reason"
+                  className="input"
+                  rows={3}
+                  maxLength={500}
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder="Ex.: Escalação definida pela liderança para esta rodada."
+                />
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={saveLineup}
+                  disabled={
+                    saving ||
+                    starters.length !== 15 ||
+                    reserves.length !== 5 ||
+                    reason.trim().length < 5
+                  }
+                >
+                  {saving ? "Salvando..." : "Salvar escalação"}
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+===== components/cwl-performance-panel.tsx =====
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Round = {
+  id: string;
+  roundNumber: number;
+  status: string;
+  warId: string | null;
+  warStatus: string | null;
+};
+
+type Player = {
+  id: string;
+  player_name: string;
+  player_tag: string;
+  town_hall_level: number | null;
+  lineup: {
+    role: string;
+    slot_position: number;
+    status: string;
+  };
+  performance: {
+    attack_confirmed: boolean;
+    attack_stars: number | null;
+    attack_destruction: number | null;
+    defense_confirmed: boolean;
+    defense_stars: number | null;
+    defense_destruction: number | null;
+    attack_index: number | null;
+    defense_index: number | null;
+    ad_index: number | null;
+    is_protected: boolean;
+    data_complete: boolean;
+    calculated_at: string | null;
+  } | null;
+};
+
+export function CwlPerformancePanel() {
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [roundId, setRoundId] = useState("");
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const loadRounds = useCallback(async () => {
+    try {
+      const response = await fetch("/api/cwl/overview", {
+        cache: "no-store",
+      });
+      const result = await response.json();
+
+      if (!response.ok) throw new Error(result.error);
+
+      const items: Round[] = result.rounds ?? [];
+      setRounds(items);
+
+      if (items.length) {
+        setRoundId((current) =>
+          items.some((item) => item.id === current) ? current : items[0].id
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao carregar rodadas.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadPerformance = useCallback(async (id: string) => {
+    if (!id) return;
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch(
+        `/api/cwl/performance?roundId=${encodeURIComponent(id)}`,
+        { cache: "no-store" }
+      );
+      const result = await response.json();
+
+      if (!response.ok) throw new Error(result.error);
+
+      setPlayers(result.players ?? []);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao consultar desempenho."
+      );
+      setPlayers([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRounds();
+  }, [loadRounds]);
+
+  useEffect(() => {
+    if (roundId) void loadPerformance(roundId);
+  }, [roundId, loadPerformance]);
+
+  async function processRound() {
+    if (!roundId) return;
+
+    setProcessing(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/cwl/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Falha ao processar rodada.");
+      }
+
+      setMessage(
+        `Processamento concluído: ${result.completeCount} completos e ${result.pendingCount} pendentes.`
+      );
+
+      await loadPerformance(roundId);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao processar rodada."
+      );
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  const currentRound = rounds.find((item) => item.id === roundId);
+  const complete = players.filter(
+    (player) => player.performance?.data_complete
+  ).length;
+
+  return (
+    <section className="card" style={{ marginTop: 24 }}>
+      <div className="section-head">
+        <div>
+          <span className="badge gold">ANÁLISE CWL</span>
+          <h2>Desempenho individual · A+D</h2>
+          <p className="muted">
+            Ataque, defesa e pontuação individual por rodada.
+          </p>
+        </div>
+      </div>
+
+      {error && <p className="error">{error}</p>}
+      {message && <p>{message}</p>}
+
+      {loading && <p className="muted">Carregando desempenho...</p>}
+
+      {!loading && rounds.length === 0 && (
+        <p className="muted">Nenhuma rodada cadastrada.</p>
+      )}
+
+      {rounds.length > 0 && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 12,
+              alignItems: "end",
+              marginBottom: 18,
+            }}
+          >
+            <div style={{ flex: "1 1 220px" }}>
+              <label htmlFor="performance-round">Rodada</label>
+              <select
+                id="performance-round"
+                className="input"
+                value={roundId}
+                onChange={(event) => setRoundId(event.target.value)}
+              >
+                {rounds.map((round) => (
+                  <option key={round.id} value={round.id}>
+                    Rodada {round.roundNumber}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              className="btn primary"
+              onClick={processRound}
+              disabled={
+                processing ||
+                loading ||
+                currentRound?.warStatus !== "ended"
+              }
+              title={
+                currentRound?.warStatus !== "ended"
+                  ? "O processamento exige uma guerra encerrada."
+                  : ""
+              }
+            >
+              {processing ? "Processando..." : "Processar desempenho"}
+            </button>
+          </div>
+
+          <div className="stats-grid">
+            <div className="stat-card">
+              <span>Jogadores na escalação</span>
+              <strong>{players.length}</strong>
+            </div>
+            <div className="stat-card">
+              <span>Dados completos</span>
+              <strong>{complete}/{players.length}</strong>
+            </div>
+            <div className="stat-card">
+              <span>Pendentes</span>
+              <strong>{players.length - complete}</strong>
+            </div>
+          </div>
+
+          {players.length === 0 ? (
+            <p className="muted" style={{ marginTop: 18 }}>
+              Nenhum jogador na escalação desta rodada.
+            </p>
+          ) : (
+            <div style={{ overflowX: "auto", marginTop: 18 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    {[
+                      "Jogador",
+                      "Função",
+                      "Ataque",
+                      "Defesa",
+                      "Índice A",
+                      "Índice D",
+                      "A+D",
+                      "Dados",
+                    ].map((heading) => (
+                      <th
+                        key={heading}
+                        style={{
+                          textAlign: "left",
+                          padding: 10,
+                          borderBottom: "1px solid var(--border)",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {heading}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {players.map((player) => {
+                    const perf = player.performance;
+
+                    return (
+                      <tr key={player.id}>
+                        <td style={{ padding: 10 }}>
+                          <strong>{player.player_name}</strong>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {player.player_tag}
+                          </div>
+                        </td>
+                        <td style={{ padding: 10 }}>
+                          {player.lineup.role === "starter"
+                            ? `Titular ${player.lineup.slot_position}`
+                            : `Reserva ${player.lineup.slot_position}`}
+                        </td>
+                        <td style={{ padding: 10, whiteSpace: "nowrap" }}>
+                          {perf?.attack_confirmed
+                            ? `${perf.attack_stars ?? 0}★ · ${Number(perf.attack_destruction).toFixed(1)}%`
+                            : "Pendente"}
+                        </td>
+                        <td style={{ padding: 10, whiteSpace: "nowrap" }}>
+                          {perf?.defense_confirmed
+                            ? `${perf.defense_stars ?? 0}★ · ${Number(perf.defense_destruction).toFixed(1)}%`
+                            : "Pendente"}
+                        </td>
+                        <td style={{ padding: 10 }}>
+                          {perf?.attack_index == null
+                            ? "—"
+                            : `${Number(perf.attack_index).toFixed(1)}`}
+                        </td>
+                        <td style={{ padding: 10 }}>
+                          {perf?.defense_index == null
+                            ? "—"
+                            : `${Number(perf.defense_index).toFixed(1)}`}
+                        </td>
+                        <td style={{ padding: 10 }}>
+                          <strong>
+                            {perf?.ad_index == null
+                              ? "—"
+                              : Number(perf.ad_index).toFixed(1)}
+                          </strong>
+                        </td>
+                        <td style={{ padding: 10 }}>
+                          {perf?.data_complete ? (
+                            <span className="badge">Completo</span>
+                          ) : (
+                            <span className="badge">Pendente</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+===== components/cwl-war-panel.tsx =====
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Round = {
+  id: string;
+  roundNumber: number;
+  status: string;
+  warId: string | null;
+  warStatus: string | null;
+  opponentName: string | null;
+  opponentTag: string | null;
+  clanStars: number | null;
+  opponentStars: number | null;
+  teamSize: number | null;
+  warStart: string | null;
+  warEnd: string | null;
+};
+
+type Overview = {
+  success?: boolean;
+  season?: {
+    id: string;
+    season: string;
+    league_name: string | null;
+    group_number: number | null;
+    status: string;
+  } | null;
+  rounds?: Round[];
+  error?: string;
+};
+
+const statusLabels: Record<string, string> = {
+  scheduled: "Agendada",
+  preparation: "Preparação",
+  in_progress: "Em andamento",
+  completed: "Concluída",
+  processed: "Processada",
+  processing: "Processando",
+  failed: "Falha",
+};
+
+export function CwlWarPanel() {
+  const [data, setData] = useState<Overview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const loadOverview = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/cwl/overview", {
+        cache: "no-store",
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Não foi possível carregar a CWL.");
+      }
+
+      setData(result);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Erro de comunicação com o servidor."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOverview();
+  }, [loadOverview]);
+
+  async function synchronize() {
+    setSyncing(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch("/api/cwl/sync", {
+        method: "POST",
+      });
+      const result = await response.json();
+
+      if (result.available === false) {
+        setMessage(
+          result.message ||
+            "Não existe uma CWL disponível para sincronização no momento."
+        );
+        return;
+      }
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Falha ao sincronizar a CWL.");
+      }
+
+      setMessage(
+        `Sincronização concluída: ${result.warsSaved ?? 0} guerras e ${result.attacksSaved ?? 0} ataques registrados.`
+      );
+
+      await loadOverview();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Erro de comunicação durante a sincronização."
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const rounds = data?.rounds ?? [];
+  const completed = rounds.filter(
+    (round) => round.status === "completed" || round.status === "processed"
+  ).length;
+
+  return (
+    <div>
+      <section className="card">
+        <div className="section-head">
+          <div>
+            <span className="badge gold">CWL · ACOMPANHAMENTO</span>
+            <h2>Guerras da liga</h2>
+            <p>
+              Acompanhe os sete confrontos da UPALELE durante a temporada.
+            </p>
+          </div>
+
+          <button
+            className="btn primary"
+            onClick={synchronize}
+            disabled={syncing || loading}
+          >
+            {syncing ? "Sincronizando..." : "Sincronizar CWL"}
+          </button>
+        </div>
+
+        {data?.season && (
+          <>
+            <div className="stats-grid">
+              <div className="stat-card">
+                <span>Temporada</span>
+                <strong>{data.season.season}</strong>
+              </div>
+              <div className="stat-card">
+                <span>Rodadas concluídas</span>
+                <strong>{completed}/7</strong>
+              </div>
+              <div className="stat-card">
+                <span>Situação</span>
+                <strong>
+                  {statusLabels[data.season.status] ?? data.season.status}
+                </strong>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
+      {message && (
+        <section className="card" style={{ marginTop: 16 }}>
+          <p>{message}</p>
+        </section>
+      )}
+
+      {error && (
+        <section className="card" style={{ marginTop: 16 }}>
+          <p className="error">{error}</p>
+        </section>
+      )}
+
+      {loading ? (
+        <section className="card" style={{ marginTop: 16 }}>
+          <p className="muted">Carregando confrontos...</p>
+        </section>
+      ) : !data?.season ? (
+        <section className="card" style={{ marginTop: 16 }}>
+          <h2>Nenhuma temporada registrada</h2>
+          <p className="muted">
+            Quando a próxima CWL estiver disponível, utilize o botão de
+            sincronização para carregar os sete confrontos da UPALELE.
+          </p>
+        </section>
+      ) : (
+        <section style={{ marginTop: 20 }}>
+          <div className="section-head">
+            <div>
+              <h2>Calendário de confrontos</h2>
+              <p className="muted">
+                Uma guerra da UPALELE por rodada.
+              </p>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+              gap: 14,
+            }}
+          >
+            {Array.from({ length: 7 }, (_, index) => {
+              const round = rounds.find(
+                (item) => item.roundNumber === index + 1
+              );
+
+              return (
+                <article className="card" key={index + 1}>
+                  <div className="section-head">
+                    <div>
+                      <span className="badge">RODADA {index + 1}</span>
+                      <h2 style={{ marginTop: 10 }}>
+                        {round?.opponentName ?? "Aguardando confronto"}
+                      </h2>
+                      {round?.opponentTag && (
+                        <p className="muted">{round.opponentTag}</p>
+                      )}
+                    </div>
+                    <span className="badge">
+                      {statusLabels[round?.status ?? "scheduled"] ??
+                        round?.status ??
+                        "Agendada"}
+                    </span>
+                  </div>
+
+                  {round?.warId ? (
+                    <>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr auto 1fr",
+                          alignItems: "center",
+                          gap: 10,
+                          textAlign: "center",
+                          margin: "20px 0",
+                        }}
+                      >
+                        <div>
+                          <strong>UPALELE</strong>
+                          <div style={{ fontSize: 30, fontWeight: 700 }}>
+                            {round.clanStars ?? 0}
+                          </div>
+                        </div>
+                        <span className="muted">VS</span>
+                        <div>
+                          <strong>Adversário</strong>
+                          <div style={{ fontSize: 30, fontWeight: 700 }}>
+                            {round.opponentStars ?? 0}
+                          </div>
+                        </div>
+                      </div>
+
+                      <p className="muted">
+                        Tamanho da guerra: {round.teamSize ?? "—"} jogadores
+                      </p>
+                      {round.warEnd && (
+                        <p className="muted">
+                          Encerramento:{" "}
+                          {new Date(round.warEnd).toLocaleString("pt-BR")}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="muted">
+                      Os dados deste confronto ainda não estão disponíveis.
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+===== app/cwl/page.tsx =====
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { AppShell } from "@/components/app-shell";
+import { CwlSelectionPanel } from "@/components/cwl-selection-panel";
+import { CwlWarPanel } from "@/components/cwl-war-panel";
+import { CwlLineupPanel } from "@/components/cwl-lineup-panel";
+import { CwlPerformancePanel } from "@/components/cwl-performance-panel";
+
+export const dynamic = "force-dynamic";
+
+export default async function CwlPage() {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) redirect("/login");
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("in_game_name, role, is_active")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (!profile?.is_active) redirect("/login");
+
+  if (!["leader", "co_leader"].includes(profile.role ?? "")) {
+    redirect("/dashboard");
+  }
+
+  return (
+    <AppShell
+      title="Clan War League"
+      userName={profile.in_game_name || "Jogador"}
+      role={profile.role}
+    >
+      <>
+        <CwlWarPanel />
+
+        <div style={{ marginTop: 24 }}>
+          <CwlLineupPanel />
+        <CwlPerformancePanel />
+        </div>
+
+        <div style={{ marginTop: 32 }}>
+          <CwlSelectionPanel />
+        </div>
+      </>
+    </AppShell>
+  );
+}
+
+
+===== MIGRATIONS CWL =====
+

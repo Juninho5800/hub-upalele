@@ -64,10 +64,11 @@ export default async function MembersPage() {
       "A integração com o Clash of Clans não está configurada no servidor.";
   } else {
     try {
-      const response = await fetch(
-  `https://api.clashofclans.com/v1/clans/${encodeURIComponent(
-    clanTag.trim()
-  )}`,
+   const normalizedTag = clanTag.trim().replace(/^#/, "");
+const encodedTag = encodeURIComponent(`#${normalizedTag}`);
+
+const response = await fetch(
+  `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}`,
   {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -76,11 +77,20 @@ export default async function MembersPage() {
     cache: "no-store",
   }
 );
+
       if (!response.ok) {
         console.error(
           "Erro ao consultar membros do Clash of Clans:",
           response.status
         );
+
+        const details = await response.text();
+
+console.error(
+  "Erro ao consultar membros do Clash of Clans:",
+  response.status,
+  details
+);
 
         apiError =
           response.status === 403

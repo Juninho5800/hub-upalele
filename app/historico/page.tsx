@@ -24,11 +24,53 @@ export default async function HistoryPage() {
 
   if (!profile?.is_active) redirect("/login");
 
-  const { data, error } = await supabase
-    .from("historical_punishment_records")
-    .select("id, source_order, member_name, date_text, notes, source_label")
-    .eq("is_active", true)
-    .order("source_order");
+  const [
+    { data: historicalData, error: historicalError },
+    { data: punishmentData, error: punishmentError },
+  ] = await Promise.all([
+    supabase
+      .from("historical_punishment_records")
+      .select("id, source_order, member_name, date_text, notes, source_label")
+      .eq("is_active", true)
+      .order("source_order", { ascending: true }),
+
+    supabase
+      .from("punishments")
+      .select(
+        "id, member_name, applied_on, punishment_label, reason, return_date, source_note, created_at, status"
+      )
+      .ilike("punishment_label", "%gancho%")
+      .neq("status", "cancelled")
+      .order("created_at", { ascending: false }),
+  ]);
+
+  const error = historicalError || punishmentError;
+
+  const historicalRows = (historicalData ?? []).map((row) => ({
+    id: row.id,
+    source_order: row.source_order,
+    member_name: row.member_name,
+    date_text: row.date_text,
+    notes: row.notes,
+    source_label: row.source_label,
+    punishment_label: null as string | null,
+    return_date: null as string | null,
+    origin: "historical" as const,
+  }));
+
+  const automaticRows = (punishmentData ?? []).map((row) => ({
+    id: row.id,
+    source_order: null as number | null,
+    member_name: row.member_name,
+    date_text: row.applied_on,
+    notes: null,
+    source_label: "Votação da liderança",
+    punishment_label: row.punishment_label,
+    return_date: row.return_date,
+    origin: "automatic" as const,
+  }));
+
+  const rows = [...historicalRows, ...automaticRows];
 
   const role = (profile.role ?? "").trim().toLowerCase();
   const canManage = ["leader", "co_leader", "coleader"].includes(role);
@@ -42,20 +84,21 @@ export default async function HistoryPage() {
       <section className="card">
         <div className="section-head">
           <div>
-            <h2>Histórico antigo</h2>
+            <h2>Histórico punitivo</h2>
             <p>
-              Registros preservados conforme o material enviado.
-              Registros anulados são ocultados desta listagem.
+              Registros antigos preservados e novas punições
+              integradas automaticamente pelas votações.
             </p>
           </div>
-          <span className="badge">{data?.length ?? 0} registros</span>
+
+          <span className="badge">{rows.length} registros</span>
         </div>
 
         {error ? (
           <p className="error">{error.message}</p>
         ) : (
           <HistoricalPunishmentsManager
-            rows={data ?? []}
+            rows={rows}
             canManage={canManage}
           />
         )}

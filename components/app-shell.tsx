@@ -5,21 +5,45 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignOutButton } from "@/components/sign-out-button";
 
-const clanLinks = [
-  { href: "/dashboard", icon: "⌂", label: "Visão geral" },
-  { href: "/memorial", icon: "▤", label: "Memorial" },
-  { href: "/ataques", icon: "◎", label: "Assistente de ataques" },
-  { href: "/war-room", icon: "⚔", label: "War Room" },
-  { href: "/membros", icon: "♙", label: "Membros" },
-  { href: "/ganchos", icon: "⚑", label: "Ganchos ativos" },
-  { href: "/historico", icon: "◷", label: "Histórico punitivo" },
-  { href: "/eventos", icon: "▦", label: "Eventos" },
+const clanGroups = [
+  {
+    label: "VISÃO GERAL",
+    links: [
+      { href: "/dashboard", icon: "⌂", label: "Visão geral" },
+    ],
+  },
+  {
+    label: "CLÃ",
+    links: [
+      { href: "/membros", icon: "♙", label: "Membros" },
+      { href: "/memorial", icon: "▤", label: "Memorial" },
+    ],
+  },
+  {
+    label: "GUERRA",
+    links: [
+      { href: "/war-room", icon: "⚔", label: "War Room" },
+      { href: "/ataques", icon: "◎", label: "Assistente de ataques" },
+      { href: "/cwl", icon: "⚔", label: "CWL — Liga" },
+      { href: "/ganchos", icon: "⚑", label: "Ganchos ativos" },
+    ],
+  },
 ];
 
 const leadershipLinks = [
   { href: "/votacoes", icon: "⚖", label: "Votações" },
   { href: "/lideranca", icon: "♛", label: "Central da liderança" },
+  { href: "/solicitacoes", icon: "✉", label: "Solicitações" },
+  { href: "/ocorrencias", icon: "🚨", label: "Central de ocorrências" },
+  { href: "/historico", icon: "◷", label: "Histórico punitivo" },
+  { href: "/eventos", icon: "▦", label: "Eventos" },
 ];
+
+type NavLink = {
+  href: string;
+  icon: string;
+  label: string;
+};
 
 type AppShellProps = {
   title: string;
@@ -35,9 +59,16 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const pathname = usePathname();
-  const isLeader = role === "leader" || role === "co_leader";
 
-  function renderLink(link: (typeof clanLinks)[number]) {
+  const normalizedRole = (role ?? "").trim().toLowerCase();
+
+  const isLeader = [
+    "leader",
+    "co_leader",
+    "coleader",
+  ].includes(normalizedRole);
+
+  function renderLink(link: NavLink) {
     const active =
       pathname === link.href ||
       (link.href !== "/dashboard" &&
@@ -53,7 +84,9 @@ export function AppShell({
         <span className="nav-icon" aria-hidden="true">
           {link.icon}
         </span>
+
         <span>{link.label}</span>
+
         {active && <span className="nav-indicator" />}
       </Link>
     );
@@ -63,15 +96,15 @@ export function AppShell({
     <div className="shell">
       <aside className="sidebar">
         <Link href="/dashboard" className="brand">
-      <img
-  src="/assets/upalele-banner.png"
-  alt="UPALELE — Clash of Clans"
-/>
+          <img
+            src="/assets/upalele-banner.png"
+            alt="UPALELE — Clash of Clans"
+          />
 
           <div className="brand-copy">
             <b>UPALELE</b>
             <small>CLAN COMMAND CENTER</small>
-<small>#PLV2VQQP</small>
+            <small>#PLV2VQQP</small>
           </div>
         </Link>
 
@@ -80,19 +113,27 @@ export function AppShell({
           <span>PAINEL DO CLÃ</span>
         </div>
 
-        <div className="nav-label">OPERAÇÕES</div>
+        {clanGroups.map((group) => (
+          <section key={group.label}>
+            <div className="nav-label">{group.label}</div>
 
-        <nav className="nav" aria-label="Navegação principal">
-          {clanLinks.map(renderLink)}
-        </nav>
+            <nav className="nav" aria-label={group.label}>
+              {group.links.map(renderLink)}
+            </nav>
+          </section>
+        ))}
 
         {isLeader && (
-          <>
-            <div className="nav-label">COMANDO</div>
-            <nav className="nav" aria-label="Navegação da liderança">
+          <section>
+            <div className="nav-label">COMANDO — LIDERANÇA</div>
+
+            <nav
+              className="nav"
+              aria-label="Navegação exclusiva da liderança"
+            >
               {leadershipLinks.map(renderLink)}
             </nav>
-          </>
+          </section>
         )}
 
         <div className="side-note">
@@ -100,7 +141,9 @@ export function AppShell({
             <span className="status-dot" />
             UPALELE
           </div>
+
           <p>Estratégia, disciplina e vitória.</p>
+
           <span className="side-note-caption">
             CENTRAL DE OPERAÇÕES
           </span>
@@ -121,12 +164,15 @@ export function AppShell({
               <span className="user-avatar">
                 {userName.trim().charAt(0).toUpperCase() || "U"}
               </span>
+
               <span>{userName}</span>
+
               <span className="meta-separator">·</span>
+
               <span className="role-label">
-                {role === "leader"
+                {normalizedRole === "leader"
                   ? "Liderança"
-                  : role === "co_leader"
+                  : ["co_leader", "coleader"].includes(normalizedRole)
                     ? "Coliderança"
                     : "Membro"}
               </span>
@@ -138,6 +184,7 @@ export function AppShell({
               <span className="status-dot" />
               CONECTADO
             </span>
+
             <SignOutButton />
           </div>
         </header>
@@ -148,6 +195,7 @@ export function AppShell({
           <span>
             <strong>UPALELE</strong> · Clan Hub
           </span>
+
           <span>ESTRATÉGIA • UNIÃO • VITÓRIA</span>
         </footer>
       </main>

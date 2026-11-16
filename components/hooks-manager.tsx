@@ -13,6 +13,7 @@ type HookRecord = {
   return_date: string | null;
   source_note: string | null;
   status: string;
+  applied_on: string | null;
   created_at: string;
 };
 
@@ -20,6 +21,21 @@ type Props = {
   rows: HookRecord[];
   canManage: boolean;
 };
+
+function formatDate(value: string | null) {
+  if (!value) return "Não informada";
+
+  const date = value.slice(0, 10);
+  const [year, month, day] = date.split("-");
+
+  if (!year || !month || !day) return "Não informada";
+
+  return `${day}/${month}/${year}`;
+}
+
+function originalDate(hook: HookRecord) {
+  return formatDate(hook.created_at);
+}
 
 export function HooksManager({ rows, canManage }: Props) {
   const [editing, setEditing] = useState<HookRecord | null>(null);
@@ -101,7 +117,6 @@ export function HooksManager({ rows, canManage }: Props) {
 
   return (
     <>
-
       {feedback && (
         <p className="historical-feedback" role="status">
           {feedback}
@@ -109,10 +124,13 @@ export function HooksManager({ rows, canManage }: Props) {
       )}
 
       {editing && (
-        <form className="roster-note-form historical-edit-form" onSubmit={saveEdit}>
+        <form
+          className="roster-note-form historical-edit-form"
+          onSubmit={saveEdit}
+        >
           <h3>Editar gancho</h3>
 
-          <label className="field-label">Membro</label>
+          <label className="field-label">Jogador</label>
           <input
             className="field"
             value={memberName}
@@ -141,7 +159,7 @@ export function HooksManager({ rows, canManage }: Props) {
             onChange={(e) => setDurationWars(e.target.value)}
           />
 
-          <label className="field-label">Motivo</label>
+          <label className="field-label">Problema / motivo</label>
           <textarea
             className="field"
             rows={3}
@@ -150,7 +168,7 @@ export function HooksManager({ rows, canManage }: Props) {
             onChange={(e) => setReason(e.target.value)}
           />
 
-          <label className="field-label">Data de retorno</label>
+          <label className="field-label">Data de retorno (somente punições por dias)</label>
           <input
             className="field"
             type="date"
@@ -176,10 +194,7 @@ export function HooksManager({ rows, canManage }: Props) {
               className="btn"
               type="button"
               disabled={busy}
-              onClick={() => {
-                setEditing(null);
-                setFeedback("");
-              }}
+              onClick={() => setEditing(null)}
             >
               Cancelar edição
             </button>
@@ -188,68 +203,65 @@ export function HooksManager({ rows, canManage }: Props) {
       )}
 
       {rows.length === 0 ? (
-        <p className="muted">
-          Sem ganchos ativos. Os registros concluídos ou cancelados não aparecem
-          nesta listagem.
-        </p>
+        <p className="muted">Nenhum gancho ativo no momento.</p>
       ) : (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Membro(s)</th>
+                <th>Jogador</th>
                 <th>Punição</th>
-                <th>Motivo</th>
+                <th>Problema</th>
+                <th>Data original</th>
                 <th>Retorno</th>
-                <th>Nota de origem</th>
                 {canManage && <th>Ações</th>}
               </tr>
             </thead>
 
             <tbody>
-              {rows.map((hook) => (
-                <tr key={hook.id}>
-                  <td>
-                    <b>{hook.member_name}</b>
-                  </td>
-                  <td>
-                    {hook.punishment_label}
-                    {hook.duration_wars
-                      ? ` (${hook.duration_wars} guerras)`
-                      : ""}
-                  </td>
-                  <td>{hook.reason || "Não informado"}</td>
-                  <td>{hook.return_date || "Conferir nota"}</td>
-                  <td>{hook.source_note || "—"}</td>
-
-
-                  {canManage && (
+              {rows.map((hook) => {
+                return (
+                  <tr key={hook.id}>
                     <td>
-                      <div className="roster-note-actions">
-                        <button
-                          className="btn"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => startEditing(hook)}
-                        >
-                          Editar
-                        </button>
-
-                        <button
-                          className="btn"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => deactivate(hook)}
-                        >
-                          Desativar
-                        </button>
-                      </div>
+                      <b>{hook.member_name}</b>
                     </td>
-                  )}
 
+                    <td>{hook.punishment_label}</td>
 
-                </tr>
-              ))}
+                    <td>{hook.reason || "Não informado"}</td>
+
+                    <td>{originalDate(hook)}</td>
+
+                    <td>
+                      <b>{formatDate(hook.return_date)}</b>
+                    </td>
+
+                    {canManage && (
+                      <td>
+                        <div className="roster-note-actions">
+                          <button
+                            className="btn"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => startEditing(hook)}
+                          >
+                            Editar
+                          </button>
+
+                          <button
+                            className="btn"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => deactivate(hook)}
+                          >
+                            Desativar
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

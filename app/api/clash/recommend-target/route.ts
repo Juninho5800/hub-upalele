@@ -1,6 +1,11 @@
-
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  getTarget,
+  getTownHallLevel,
+  normalizeTag,
+  type StrategyMember,
+} from "@/lib/clash/strategy";
 
 export const dynamic = "force-dynamic";
 
@@ -11,11 +16,7 @@ type Attack = {
   order: number;
 };
 
-type Member = {
-  tag: string;
-  name: string;
-  mapPosition: number;
-  townHallLevel: number;
+type Member = StrategyMember & {
   attacks?: Attack[];
 };
 
@@ -31,166 +32,75 @@ type War = {
   opponent: Side;
 };
 
-function getTarget(
-  type: "1" | "2",
-  player: Member,
-  allies: Member[],
-  enemies: Member[]
-) {
-  const available = enemies.filter((enemy) => {
-  // As estrelas são conquistadas pelos ataques feitos CONTRA a vila.
-  // A lista enemy.attacks contém os ataques realizados por essa vila,
-  // não os ataques recebidos por ela.
-  const attacksAgainstEnemy = allies.flatMap(
-    (ally) => ally.attacks ?? []
-  );
-
-  const bestStarsReceived = attacksAgainstEnemy
-    .filter((attack) => {
-      const defenderTag = attack.defenderTag
-        .replace(/^#/, "")
-        .toUpperCase();
-
-      const enemyTag = enemy.tag
-        .replace(/^#/, "")
-        .toUpperCase();
-
-      return defenderTag === enemyTag;
-    })
-    .reduce(
-      (best, attack) => Math.max(best, attack.stars),
-      0
-    );
-
-  return bestStarsReceived < 3;
-});
-
-  if (!available.length) {
-    return {
-      target: null,
-      reason: "Não há alvos com estrelas disponíveis.",
-    };
-  }
-
-  if (type === "1") {
-    const initialPosition = player.mapPosition + 2;
-    const initial = available.find(
-      (enemy) => enemy.mapPosition === initialPosition
-    );
-
-    if (initial) {
-      return {
-        target: initial,
-        reason: `Alvo inicial: duas posições abaixo do espelho, conforme o item 2.14. A vila ainda possui estrelas disponíveis.`,
-      };
-    }
-
-    const below = available
-      .filter((enemy) => enemy.mapPosition > initialPosition)
-      .sort((a, b) => a.mapPosition - b.mapPosition);
-
-    if (below.length) {
-      return {
-        target: below[0],
-        reason:
-          "O alvo inicial não está disponível. Este é o próximo alvo abaixo com estrelas disponíveis, conforme os itens 2.15 e 2.16.",
-      };
-    }
-
-    const above = available
-      .filter((enemy) => enemy.mapPosition < initialPosition)
-      .sort((a, b) => b.mapPosition - a.mapPosition);
-
-    return {
-      target: above[0] ?? null,
-      reason:
-        "Não há alvos disponíveis abaixo. Esta é a primeira vila disponível subindo no mapa, conforme o item 2.17.",
-    };
-  }
-
-  const sameCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel === player.townHallLevel
-    )
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const lowerCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel < player.townHallLevel
-    )
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const higherCv = available
-    .filter(
-      (enemy) => enemy.townHallLevel > player.townHallLevel
-    )
-    .sort((a, b) => b.mapPosition - a.mapPosition);
-
-  const target = sameCv[0] ?? lowerCv[0] ?? higherCv[0] ?? null;
-
-  return {
-    target,
-    reason: target
-      ? `Prioridade aplicada conforme os itens 2.18–2.20: CV igual, depois CV inferior e, por último, CV superior; em cada categoria, de baixo para cima.`
-      : "Não foi possível encontrar um alvo válido.",
-  };
-}
-
 export async function GET(request: Request) {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json(
-      { error: "Você precisa estar autenticado." },
-      { status: 401 }
-    );
-  }
-
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select("player_tag, in_game_name, is_active")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  if (profileError || !profile?.is_active || !profile.player_tag) {
-    return NextResponse.json(
-      {
-        error:
-          "Seu perfil precisa estar ativo e possuir a tag do jogador cadastrada.",
-      },
-      { status: 400 }
-    );
-  }
-
-  const { searchParams } = new URL(request.url);
-  const type = searchParams.get("type");
-
-  if (type !== "1" && type !== "2") {
-    return NextResponse.json(
-      { error: "Informe type=1 ou type=2." },
-      { status: 400 }
-    );
-  }
-
-  const token = process.env.CLASH_OF_CLANS_API_TOKEN;
-  const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
-
-  if (!token || !clanTag) {
-    return NextResponse.json(
-      { error: "Token ou tag do clã não configurado." },
-      { status: 500 }
-    );
-  }
-
   try {
+    const supabase = await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Você precisa estar autenticado." },
+        { status: 401 }
+      );
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("player_tag, in_game_name, is_active")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error(
+        "[Recommend Target] Erro ao consultar perfil:",
+        profileError
+      );
+
+      return NextResponse.json(
+        { error: "Não foi possível verificar seu perfil." },
+        { status: 500 }
+      );
+    }
+
+    if (!profile?.is_active || !profile.player_tag) {
+      return NextResponse.json(
+        {
+          error:
+            "Seu perfil precisa estar ativo e possuir a tag do jogador cadastrada.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const { searchParams } = new URL(request.url);
+    const type = searchParams.get("type");
+
+    if (type !== "1" && type !== "2") {
+      return NextResponse.json(
+        { error: "Informe type=1 ou type=2." },
+        { status: 400 }
+      );
+    }
+
+    const token = process.env.CLASH_OF_CLANS_API_TOKEN;
+    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
+
+    if (!token || !clanTag) {
+      return NextResponse.json(
+        { error: "Token ou tag do clã não configurado." },
+        { status: 500 }
+      );
+    }
+
+    const normalizedClanTag = normalizeTag(clanTag);
+    const encodedTag = encodeURIComponent(`#${normalizedClanTag}`);
+
     const response = await fetch(
-      `https://api.clashofclans.com/v1/clans/${encodeURIComponent(
-        clanTag.trim()
-      )}/currentwar`,
+      `https://cocproxy.royaleapi.dev/v1/clans/${encodedTag}/currentwar`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -201,11 +111,12 @@ export async function GET(request: Request) {
     );
 
     if (!response.ok) {
+      console.error("[Clash API] recommend-target:", {
+        status: response.status,
+      });
+
       return NextResponse.json(
-        {
-          error: "Não foi possível consultar a guerra atual.",
-          status: response.status,
-        },
+        { error: "Não foi possível consultar a guerra atual." },
         { status: response.status }
       );
     }
@@ -213,27 +124,40 @@ export async function GET(request: Request) {
     const war = (await response.json()) as War;
 
     if (
-      !war.clan?.members ||
-      !war.opponent?.members ||
+      !war?.clan?.tag ||
+      normalizeTag(war.clan.tag) !== normalizedClanTag
+    ) {
+      return NextResponse.json(
+        {
+          error: "A guerra retornada pela API não pertence ao clã configurado.",
+        },
+        { status: 502 }
+      );
+    }
+
+    if (
+      !Array.isArray(war.clan.members) ||
+      !Array.isArray(war.opponent?.members) ||
       !["preparation", "inWar"].includes(war.state)
     ) {
       return NextResponse.json(
-        { error: "Não há uma guerra válida para recomendar alvos." },
+        {
+          error: "Não há uma guerra válida para recomendar alvos.",
+        },
         { status: 409 }
       );
     }
 
-    const playerTag = profile.player_tag.replace(/^#/, "").toUpperCase();
+    const playerTag = normalizeTag(profile.player_tag);
 
-    const allies = war.clan.members.map((member) => ({
+    const normalizeMember = (member: Member): Member => ({
       ...member,
-      tag: member.tag.replace(/^#/, "").toUpperCase(),
-    }));
+      tag: normalizeTag(member.tag),
+      townHallLevel: getTownHallLevel(member),
+    });
 
-    const enemies = war.opponent.members.map((member) => ({
-      ...member,
-      tag: member.tag.replace(/^#/, "").toUpperCase(),
-    }));
+    const allies = war.clan.members.map(normalizeMember);
+    const enemies = war.opponent.members.map(normalizeMember);
 
     const player = allies.find((member) => member.tag === playerTag);
 
@@ -270,16 +194,35 @@ export async function GET(request: Request) {
       return NextResponse.json({
         success: true,
         recommendation: null,
-        message:
-          "Realize seu primeiro ataque antes de consultar o segundo.",
+        message: "A API ainda não registra seu primeiro ataque nesta guerra.",
       });
     }
 
+    // Calcula a melhor quantidade de estrelas recebidas por cada vila adversária.
+    const bestStarsByEnemy = new Map<string, number>();
+
+    for (const ally of allies) {
+      for (const attack of ally.attacks ?? []) {
+        if (!attack?.defenderTag || !Number.isFinite(attack.stars)) {
+          continue;
+        }
+
+        const defenderTag = normalizeTag(attack.defenderTag);
+        const currentBest = bestStarsByEnemy.get(defenderTag) ?? 0;
+
+        bestStarsByEnemy.set(
+          defenderTag,
+          Math.max(currentBest, attack.stars)
+        );
+      }
+    }
+
+    // Mantém a mesma função estratégica utilizada pela sincronização automática.
     const { target, reason } = getTarget(
       type,
       player,
-      allies,
-      enemies
+      enemies,
+      bestStarsByEnemy
     );
 
     if (!target) {
@@ -296,7 +239,7 @@ export async function GET(request: Request) {
         tag: player.tag,
         name: player.name,
         position: player.mapPosition,
-        townHallLevel: player.townHallLevel,
+        townHallLevel: getTownHallLevel(player) ?? null,
         attacksUsed,
       },
       attackType: type,
@@ -304,13 +247,18 @@ export async function GET(request: Request) {
         tag: target.tag,
         name: target.name,
         position: target.mapPosition,
-        townHallLevel: target.townHallLevel,
+        townHallLevel: getTownHallLevel(target) ?? null,
       },
       reason,
       warning:
         "Confira o mapa antes de atacar. Se outro jogador estiver atacando o alvo, aguarde o término, conforme o item 2.9 do memorial.",
     });
-  } catch {
+  } catch (error) {
+    console.error(
+      "[Clash API] Erro ao recomendar alvo:",
+      error
+    );
+
     return NextResponse.json(
       { error: "Erro inesperado ao calcular a recomendação." },
       { status: 500 }

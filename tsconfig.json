@@ -1,3 +1,4 @@
+
 {
   "compilerOptions": {
     "target": "ES2017",
@@ -9,6 +10,7 @@
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
+    "noUncheckedSideEffectImports": false,
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",

@@ -2,20 +2,28 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   createHistoricalRecord,
   deactivateHistoricalRecord,
   updateHistoricalRecord,
+  updateAutomaticPunishment,
+  deactivateAutomaticPunishment,
 } from "@/app/historico/actions";
 
 type HistoricalRecord = {
   id: string;
-  source_order: number;
+  source_order: number | null;
   member_name: string;
   date_text: string | null;
   notes: string | null;
   source_label: string;
+  origin: "historical" | "automatic";
+  return_date: string | null;
+  punishment_label: string | null;
 };
+
+type RecordType = "Kick / Expulsão" | "Outro motivo";
 
 export function HistoricalPunishmentsManager({
   rows,
@@ -24,11 +32,17 @@ export function HistoricalPunishmentsManager({
   rows: HistoricalRecord[];
   canManage: boolean;
 }) {
+  const router = useRouter();
+
   const [editing, setEditing] = useState<HistoricalRecord | null>(null);
   const [creating, setCreating] = useState(false);
+
   const [memberName, setMemberName] = useState("");
   const [dateText, setDateText] = useState("");
   const [notes, setNotes] = useState("");
+  const [recordType, setRecordType] =
+    useState<RecordType>("Kick / Expulsão");
+
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
@@ -38,6 +52,7 @@ export function HistoricalPunishmentsManager({
     setMemberName("");
     setDateText("");
     setNotes("");
+    setRecordType("Kick / Expulsão");
   }
 
   function startCreating() {
@@ -47,8 +62,8 @@ export function HistoricalPunishmentsManager({
   }
 
   function startEditing(row: HistoricalRecord) {
-    setCreating(false);
     setEditing(row);
+    setCreating(false);
     setMemberName(row.member_name);
     setDateText(row.date_text ?? "");
     setNotes(row.notes ?? "");
@@ -64,6 +79,7 @@ export function HistoricalPunishmentsManager({
         memberName,
         dateText,
         notes,
+        recordType,
       });
 
       if (!result.success) {
@@ -72,23 +88,33 @@ export function HistoricalPunishmentsManager({
       }
 
       resetForm();
-      setMessage("Punição adicionada ao histórico com sucesso.");
+      setMessage("Novo registro criado com sucesso.");
+      router.refresh();
     });
   }
 
   function handleSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     if (!editing) return;
 
     setMessage("");
 
     startTransition(async () => {
-      const result = await updateHistoricalRecord({
-        id: editing.id,
-        memberName,
-        dateText,
-        notes,
-      });
+      const result =
+        editing.origin === "automatic"
+          ? await updateAutomaticPunishment({
+              id: editing.id,
+              memberName,
+              dateText,
+              notes,
+            })
+          : await updateHistoricalRecord({
+              id: editing.id,
+              memberName,
+              dateText,
+              notes,
+            });
 
       if (!result.success) {
         setMessage(result.error);
@@ -97,13 +123,14 @@ export function HistoricalPunishmentsManager({
 
       resetForm();
       setMessage("Registro atualizado com sucesso.");
+      router.refresh();
     });
   }
 
   function handleDeactivate(row: HistoricalRecord) {
     const confirmed = window.confirm(
       `Deseja anular o registro de ${row.member_name}?\n\n` +
-        "Ele será ocultado da lista padrão, mas continuará salvo no banco."
+        "Ele será ocultado do histórico, mas continuará salvo no banco de dados."
     );
 
     if (!confirmed) return;
@@ -111,88 +138,86 @@ export function HistoricalPunishmentsManager({
     setMessage("");
 
     startTransition(async () => {
-      const result = await deactivateHistoricalRecord(row.id);
+      const result =
+        row.origin === "automatic"
+          ? await deactivateAutomaticPunishment(row.id)
+          : await deactivateHistoricalRecord(row.id);
 
       if (!result.success) {
         setMessage(result.error);
         return;
       }
 
-      if (editing?.id === row.id) resetForm();
+      if (editing?.id === row.id) {
+        resetForm();
+      }
+
       setMessage("Registro anulado e ocultado da listagem.");
+      router.refresh();
     });
+  }
+
+  function formatDate(value: string | null) {
+    if (!value) return "—";
+
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (match) {
+      return `${match[3]}/${match[2]}/${match[1]}`;
+    }
+
+    return value;
   }
 
   return (
     <div className="historical-manager">
-      {canManage && !creating && !editing && (
-        <div className="roster-note-actions">
-          <button type="button" onClick={startCreating} disabled={isPending}>
-            + Adicionar punição
+      {canManage && (
+        <div className="section-head">
+          <div>
+            <p className="muted">
+              Registre kicks, expulsões e outros motivos decididos pela liderança.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="btn primary"
+            onClick={startCreating}
+            disabled={isPending}
+          >
+            + Novo registro
           </button>
         </div>
       )}
 
-      {canManage && creating && (
-        <form
-          className="roster-note-form historical-edit-form historical-create-form"
-          onSubmit={handleCreate}
-        >
-          <h3>Adicionar punição ao histórico</h3>
-          <p className="muted">
-            Este cadastro será salvo apenas no histórico antigo. Não criará
-            um gancho ativo.
-          </p>
-
-          <label htmlFor="new-history-member">Nick do jogador</label>
-          <input
-            id="new-history-member"
-            value={memberName}
-            onChange={(event) => setMemberName(event.target.value)}
-            maxLength={100}
-            required
-          />
-
-          <label htmlFor="new-history-date">Data original</label>
-          <input
-            id="new-history-date"
-            value={dateText}
-            onChange={(event) => setDateText(event.target.value)}
-            maxLength={100}
-            placeholder="Data da punição, se conhecida"
-          />
-
-          <label htmlFor="new-history-notes">Observação</label>
-          <textarea
-            id="new-history-notes"
-            value={notes}
-            onChange={(event) => setNotes(event.target.value)}
-            maxLength={2000}
-            rows={4}
-            placeholder="Motivo ou detalhes da punição..."
-          />
-
-          <div className="roster-note-actions">
-            <button type="submit" disabled={isPending}>
-              {isPending ? "Adicionando..." : "Adicionar ao histórico"}
-            </button>
-            <button
-              type="button"
-              onClick={resetForm}
-              disabled={isPending}
-            >
-              Cancelar
-            </button>
-          </div>
-        </form>
-      )}
-
-      {canManage && editing && (
+      {canManage && (creating || editing) && (
         <form
           className="roster-note-form historical-edit-form"
-          onSubmit={handleSave}
+          onSubmit={creating ? handleCreate : handleSave}
         >
-          <h3>Editar registro histórico</h3>
+          <h3>
+            {creating
+              ? "Novo registro punitivo"
+              : editing?.origin === "automatic"
+                ? "Editar punição automática"
+                : "Editar registro histórico"}
+          </h3>
+
+          {creating && (
+            <>
+              <label htmlFor="history-type">Tipo de registro</label>
+              <select
+                id="history-type"
+                value={recordType}
+                onChange={(event) =>
+                  setRecordType(event.target.value as RecordType)
+                }
+              >
+                <option value="Kick / Expulsão">Kick / Expulsão</option>
+                <option value="Outro motivo">Outro motivo</option>
+              </select>
+            </>
+          )}
 
           <label htmlFor="history-member">Nick do jogador</label>
           <input
@@ -203,29 +228,33 @@ export function HistoricalPunishmentsManager({
             required
           />
 
-          <label htmlFor="history-date">Data original</label>
+          <label htmlFor="history-date">Data do registro</label>
           <input
             id="history-date"
+            type="date"
             value={dateText}
             onChange={(event) => setDateText(event.target.value)}
-            maxLength={100}
-            placeholder="Data conforme o material original"
           />
 
-          <label htmlFor="history-notes">Observação</label>
+          <label htmlFor="history-notes">Motivo / observação</label>
           <textarea
             id="history-notes"
             value={notes}
             onChange={(event) => setNotes(event.target.value)}
             maxLength={2000}
             rows={4}
-            placeholder="Observações do registro..."
+            placeholder="Descreva o motivo do registro..."
           />
 
           <div className="roster-note-actions">
             <button type="submit" disabled={isPending}>
-              {isPending ? "Salvando..." : "Salvar alterações"}
+              {isPending
+                ? "Salvando..."
+                : creating
+                  ? "Criar registro"
+                  : "Salvar alterações"}
             </button>
+
             <button
               type="button"
               onClick={resetForm}
@@ -244,7 +273,7 @@ export function HistoricalPunishmentsManager({
       )}
 
       {!rows.length ? (
-        <p className="muted">Nenhum registro histórico ativo.</p>
+        <p className="muted">Nenhum registro histórico encontrado.</p>
       ) : (
         <div className="table-wrap">
           <table>
@@ -252,32 +281,51 @@ export function HistoricalPunishmentsManager({
               <tr>
                 <th>#</th>
                 <th>Nick</th>
+                <th>Tipo</th>
                 <th>Data original</th>
                 <th>Observação</th>
                 {canManage && <th>Ações</th>}
               </tr>
             </thead>
+
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.source_order}</td>
-                  <td><b>{row.member_name}</b></td>
-                  <td>{row.date_text || "—"}</td>
-                  <td>{row.notes || "Não informada"}</td>
+              {rows.map((row, index) => (
+                <tr key={`${row.origin}-${row.id}`}>
+                  <td>{index + 1}</td>
+
+                  <td>
+                    <b>{row.member_name}</b>
+                  </td>
+
+                  <td>
+                    {row.origin === "automatic"
+                      ? row.punishment_label || "Punição automática"
+                      : row.source_label || "Registro histórico"}
+                  </td>
+
+                  <td>{formatDate(row.date_text)}</td>
+
+                  <td>
+                    {row.origin === "automatic"
+                      ? "Não informado"
+                      : row.notes || "Não informado"}
+                  </td>
+
                   {canManage && (
                     <td>
                       <div className="roster-note-actions">
                         <button
                           type="button"
                           onClick={() => startEditing(row)}
-                          disabled={isPending || creating}
+                          disabled={isPending}
                         >
                           Editar
                         </button>
+
                         <button
                           type="button"
                           onClick={() => handleDeactivate(row)}
-                          disabled={isPending || creating}
+                          disabled={isPending}
                         >
                           Anular
                         </button>
