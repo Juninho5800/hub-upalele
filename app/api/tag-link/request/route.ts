@@ -6,18 +6,8 @@ import { normalizeTag } from "@/lib/clash/strategy";
 
 export const dynamic = "force-dynamic";
 
-
 export async function POST(request: Request) {
   try {
-    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
-
-    if (!clanTag) {
-      return NextResponse.json(
-        { error: "TAG do clã não configurada no servidor." },
-        { status: 500 }
-      );
-    }
-
     const supabase = await createClient();
 
     // 1. Verificar autenticação
@@ -33,8 +23,57 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. Ler e validar a TAG informada
-    const body = await request.json();
+    // 2. Consultar perfil
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("player_tag, is_active, in_game_name")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) throw profileError;
+
+    if (!profile) {
+      return NextResponse.json(
+        { error: "Perfil não encontrado." },
+        { status: 404 }
+      );
+    }
+
+    // 3. Permitir somente a primeira vinculação de novos cadastros
+    const isInitialRegistration =
+      profile.is_active === false &&
+      !profile.player_tag &&
+      profile.in_game_name === "Aguardando vinculação";
+
+    if (!profile.is_active && !isInitialRegistration) {
+      return NextResponse.json(
+        {
+          error:
+            "Seu perfil está temporariamente inativo. Entre em contato com a liderança.",
+        },
+        { status: 403 }
+      );
+    }
+
+    if (profile.player_tag) {
+      return NextResponse.json(
+        { error: "Esta conta já possui uma TAG vinculada." },
+        { status: 409 }
+      );
+    }
+
+    // 4. Validar TAG informada
+    let body: { playerTag?: unknown };
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Corpo da solicitação inválido." },
+        { status: 400 }
+      );
+    }
+
     const rawTag =
       typeof body?.playerTag === "string"
         ? body.playerTag.trim()
@@ -49,33 +88,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Verificar se o perfil existe e ainda não está vinculado
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("player_tag")
-      .eq("id", user.id)
-      .maybeSingle();
+    // 5. Consultar configuração do clã
+    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
 
-    if (profileError) {
-      throw profileError;
-    }
-
-    if (!profile) {
+    if (!clanTag) {
       return NextResponse.json(
-        { error: "Perfil não encontrado." },
-        { status: 404 }
+        { error: "TAG do clã não configurada no servidor." },
+        { status: 500 }
       );
     }
 
-    if (profile.player_tag) {
-      return NextResponse.json(
-        { error: "Esta conta já possui uma TAG vinculada." },
-        { status: 409 }
-      );
-    }
-
-    // 4. Consultar os membros oficiais da UPALELE
-   const members = await getClanMembers(clanTag);
+    // 6. Consultar membros oficiais da UPALELE
+    const members = await getClanMembers(clanTag);
 
     const member = members.find(
       (item) => normalizeTag(item.tag) === playerTag
@@ -83,15 +107,12 @@ export async function POST(request: Request) {
 
     if (!member) {
       return NextResponse.json(
-        {
-          error:
-            "Esta TAG não pertence atualmente ao clã UPALELE.",
-        },
+        { error: "Esta TAG não pertence atualmente ao clã UPALELE." },
         { status: 403 }
       );
     }
 
-    // 5. Criar solicitação de vinculação
+    // 7. Criar solicitação de vinculação
     const { data: linkRequest, error: insertError } =
       await supabase
         .from("tag_link_requests")

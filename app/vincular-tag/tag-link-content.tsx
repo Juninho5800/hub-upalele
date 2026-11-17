@@ -93,14 +93,14 @@ export function TagLinkContent({
           confirmar sua identidade dentro do Clash of Clans.
         </p>
 
-        {hasLinkedTag && !isActive ? (
-          <div style={styles.warning}>
-            <strong>Perfil temporariamente inativo</strong>
-            <p>
-              Sua conta já possui uma TAG vinculada, mas está sem acesso
-              ativo. Entre em contato com a liderança para verificar sua situação.
-            </p>
-          </div>
+        {!isActive ? (
+  <div style={styles.warning}>
+    <strong>Perfil temporariamente inativo</strong>
+    <p>
+      Seu acesso ao Clan Hub está desativado pela liderança.
+      Entre em contato com um líder ou colíder para verificar sua situação.
+    </p>
+  </div>
         ) : pending ? (
           <div style={styles.pendingBox}>
             <div style={styles.pendingIcon}>◷</div>
@@ -117,6 +117,21 @@ export function TagLinkContent({
             <span style={styles.pendingBadge}>
               AGUARDANDO APROVAÇÃO
             </span>
+
+            <div style={styles.pendingRefresh}>
+              <strong>⚠️ IMPORTANTE: ATUALIZE A PÁGINA</strong>
+
+              <p>
+                Após a aprovação da liderança, atualize esta página
+                para liberar seu acesso ao Clan Hub.
+              </p>
+
+              <p style={styles.refreshHint}>
+                No computador, pressione F5. No celular, utilize a opção
+                atualizar do navegador ou deslize a página para baixo,
+                caso disponível.
+              </p>
+            </div>
           </div>
         ) : (
           <>
@@ -326,6 +341,21 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 900,
     letterSpacing: 1,
   },
+  pendingRefresh: {
+    marginTop: 20,
+    padding: 14,
+    borderRadius: 11,
+    border: "1px solid rgba(56,189,248,.25)",
+    background: "rgba(14,165,233,.09)",
+    textAlign: "left",
+    color: "#bae6fd",
+    fontSize: 11,
+    lineHeight: 1.7,
+  },
+  refreshHint: {
+    marginBottom: 0,
+    color: "#8ecde8",
+  },
   warning: {
     marginTop: 24,
     padding: 15,
@@ -356,7 +386,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 12,
     lineHeight: 1.6,
   },
-    notice: {
+  notice: {
     display: "flex",
     alignItems: "flex-start",
     gap: 11,
@@ -366,7 +396,6 @@ const styles: Record<string, CSSProperties> = {
     border: "1px solid rgba(148,163,184,.12)",
     background: "rgba(148,163,184,.045)",
   },
-
   footer: {
     marginTop: 27,
     paddingTop: 17,

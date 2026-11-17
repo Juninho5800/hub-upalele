@@ -12,11 +12,15 @@ export default function LoginPage() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"error" | "success">("error");
   const [showPassword, setShowPassword] = useState(false);
+  const [awaitingOtp, setAwaitingOtp] = useState(false);
+  const [otp, setOtp] = useState("");
 
   function changeMode(newMode: "login" | "signup") {
     setMode(newMode);
     setMessage("");
     setPassword("");
+    setOtp("");
+    setAwaitingOtp(false);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -28,14 +32,24 @@ export default function LoginPage() {
     try {
       const supabase = createClient();
 
+      if (awaitingOtp) {
+        const { error } = await supabase.auth.verifyOtp({
+          email: email.trim(),
+          token: otp.trim(),
+          type: "signup",
+        });
+
+        if (error) throw error;
+
+        window.location.href = "/vincular-tag";
+        return;
+      }
+
       if (mode === "signup") {
         const { data, error } = await supabase.auth.signUp({
-  email: email.trim(),
-  password,
-  options: {
-    emailRedirectTo: `${window.location.origin}/auth/callback`,
-  },
-});
+          email: email.trim(),
+          password,
+        });
 
         if (error) throw error;
 
@@ -44,11 +58,11 @@ export default function LoginPage() {
           return;
         }
 
+        setAwaitingOtp(true);
         setMessageType("success");
         setMessage(
-          "Conta criada! Confirme seu e-mail pelo link enviado e depois entre para vincular sua TAG do Clash of Clans."
+          "Enviamos um código de confirmação para seu e-mail. Digite os oito dígitos para ativar sua conta."
         );
-
         setPassword("");
         return;
       }
@@ -104,8 +118,8 @@ export default function LoginPage() {
           <div style={styles.brandTop}>
             <div style={styles.logoFrame}>
               <img
-                src="/assets/upalele-logo.png"
-                alt="Brasão UPALELE"
+                src="/assets/upalele-banner.png"
+                alt="Identidade visual UPALELE"
                 style={styles.logo}
               />
             </div>
@@ -150,7 +164,7 @@ export default function LoginPage() {
         <div style={styles.formPanel}>
           <div style={styles.mobileBrand}>
             <img
-              src="/assets/upalele-logo.png"
+              src="/assets/upalele-banner.png"
               alt="UPALELE"
               style={styles.mobileLogo}
             />
@@ -166,16 +180,26 @@ export default function LoginPage() {
             </div>
 
             <h2 style={styles.formTitle}>
-              {mode === "login" ? "Bem-vindo de volta" : "Crie sua conta"}
+              {awaitingOtp ? "Confirme seu e-mail" : mode === "login" ? "Bem-vindo de volta" : "Crie sua conta"}
             </h2>
 
             <p style={styles.formDescription}>
-              {mode === "login"
-                ? "Entre com suas credenciais para acessar a central do UPALELE."
-                : "Crie seu acesso para solicitar vinculação ao clã UPALELE."}
+              {awaitingOtp
+                ? `Digite o código de oito dígitos enviado para ${email.trim()}.`
+                : mode === "login"
+                  ? "Entre com suas credenciais para acessar a central do UPALELE."
+                  : "Crie seu acesso para solicitar vinculação ao clã UPALELE."}
             </p>
 
-            <div style={styles.modeSwitch}>
+            {awaitingOtp && (
+              <p style={styles.spamHint}>
+                Não recebeu o código? Verifique também as pastas de Spam, Lixo
+                eletrônico e Promoções. Nosso e-mail de confirmação pode acabar
+                sendo direcionado para uma dessas pastas.
+              </p>
+            )}
+
+            {!awaitingOtp && <div style={styles.modeSwitch}>
               <button
                 type="button"
                 onClick={() => changeMode("login")}
@@ -199,7 +223,7 @@ export default function LoginPage() {
               >
                 CRIAR CONTA
               </button>
-            </div>
+            </div>}
 
             <form onSubmit={submit} style={styles.form}>
               <label htmlFor="email" style={styles.label}>
@@ -217,6 +241,29 @@ export default function LoginPage() {
                 style={styles.input}
               />
 
+              {awaitingOtp ? (
+                <>
+                  <label htmlFor="otp" style={styles.label}>
+                    CÓDIGO DE CONFIRMAÇÃO
+                  </label>
+                  <input
+                    id="otp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{8}"
+                    maxLength={8}
+                    required
+                    value={otp}
+                    onChange={(event) =>
+                      setOtp(event.target.value.replace(/\D/g, "").slice(0, 8))
+                    }
+                    placeholder="Digite os 8 dígitos"
+                    style={{ ...styles.input, ...styles.otpInput }}
+                  />
+                </>
+              ) : (
+                <>
               <div style={styles.passwordHeading}>
                 <label htmlFor="password" style={styles.label}>
                   SENHA
@@ -249,6 +296,8 @@ export default function LoginPage() {
                   {showPassword ? "OCULTAR" : "MOSTRAR"}
                 </button>
               </div>
+                </>
+              )}
 
               <button
                 type="submit"
@@ -260,11 +309,13 @@ export default function LoginPage() {
               >
                 {busy
                   ? "PROCESSANDO..."
-                  : mode === "login"
-                    ? "ACESSAR A CENTRAL"
-                    : "CRIAR MINHA CONTA"}
+                  : awaitingOtp
+                    ? "CONFIRMAR CÓDIGO"
+                    : mode === "login"
+                      ? "ACESSAR A CENTRAL"
+                      : "CRIAR MINHA CONTA"}
 
-                {!busy && <span style={styles.submitArrow}>→</span>}
+                {!busy && !awaitingOtp && <span style={styles.submitArrow}>→</span>}
               </button>
 
               {message && (
@@ -286,17 +337,14 @@ export default function LoginPage() {
               <span style={styles.lockIcon}>⌑</span>
 
               <p style={styles.noticeText}>
-                {mode === "login"
-                  ? "O acesso à central depende da aprovação da liderança e da vinculação de uma TAG válida do clã."
-                  : "Após criar sua conta, você deverá informar sua TAG do Clash of Clans e aguardar a aprovação da liderança."}
+                {awaitingOtp
+                  ? "Após confirmar seu e-mail, você será direcionado para vincular sua TAG do Clash of Clans."
+                  : mode === "login"
+                    ? "O acesso à central depende da aprovação da liderança e da vinculação de uma TAG válida do clã."
+                    : "Após criar sua conta, você deverá informar sua TAG do Clash of Clans e aguardar a aprovação da liderança."}
               </p>
             </div>
           </div>
-<footer style={styles.formFooter}>
-  <span>UPALELE • CLAN HUB</span>
-  <span>RESPEITO · ESTRATÉGIA</span>
-</footer>
-          
         </div>
       </section>
     </main>
@@ -403,14 +451,16 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 17,
     background: "rgba(255,255,255,.07)",
     border: "1px solid rgba(226,232,240,.17)",
-    padding: 7,
+    padding: 0,
+    overflow: "hidden",
     boxSizing: "border-box",
   },
 
   logo: {
     width: "100%",
     height: "100%",
-    objectFit: "contain",
+    objectFit: "cover",
+    objectPosition: "center",
   },
 
   brandName: {
@@ -561,6 +611,17 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.7,
   },
 
+  spamHint: {
+    margin: "12px 0 0",
+    padding: "11px 13px",
+    borderRadius: 10,
+    border: "1px solid rgba(96,165,250,.18)",
+    background: "rgba(59,130,246,.07)",
+    color: "#aebed5",
+    fontSize: 11,
+    lineHeight: 1.6,
+  },
+
   modeSwitch: {
     display: "flex",
     gap: 8,
@@ -627,6 +688,13 @@ const styles: Record<string, CSSProperties> = {
   passwordHeading: {
     display: "flex",
     justifyContent: "space-between",
+  },
+
+  otpInput: {
+    textAlign: "center",
+    fontSize: 22,
+    fontWeight: 800,
+    letterSpacing: 8,
   },
 
   passwordWrap: {

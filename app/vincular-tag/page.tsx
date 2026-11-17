@@ -29,10 +29,18 @@ export default async function TagLinkPage() {
     throw new Error("Perfil não encontrado. Entre em contato com a liderança.");
   }
 
-  if (profile.player_tag && profile.is_active) {
+  // Identifica um cadastro novo, ainda aguardando a primeira vinculação.
+  const isInitialRegistration =
+    profile.is_active === false &&
+    !profile.player_tag &&
+    profile.in_game_name === "Aguardando vinculação";
+
+  // Jogadores ativos que já possuem TAG vão direto ao dashboard.
+  if (profile.is_active && profile.player_tag) {
     redirect("/dashboard");
   }
 
+  // Consulta a solicitação mais recente.
   const { data: latestRequest, error: requestError } = await supabase
     .from("tag_link_requests")
     .select("status, created_at, rejection_reason")
@@ -46,11 +54,24 @@ export default async function TagLinkPage() {
     throw new Error("Não foi possível consultar sua solicitação.");
   }
 
+  // Perfil inativo que não é um cadastro inicial:
+  // acesso bloqueado pela liderança.
+  if (!profile.is_active && !isInitialRegistration) {
+    return (
+      <TagLinkContent
+        playerName={profile.in_game_name}
+        hasLinkedTag={Boolean(profile.player_tag)}
+        isActive={false}
+        latestRequest={null}
+      />
+    );
+  }
+
   return (
     <TagLinkContent
       playerName={profile.in_game_name}
       hasLinkedTag={Boolean(profile.player_tag)}
-      isActive={profile.is_active}
+      isActive={true}
       latestRequest={latestRequest}
     />
   );
