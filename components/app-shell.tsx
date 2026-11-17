@@ -9,34 +9,37 @@ const clanGroups = [
   {
     label: "VISÃO GERAL",
     links: [
-      { href: "/dashboard", icon: "⌂", label: "Visão geral" },
+      { href: "/dashboard", icon: "🏠", label: "Visão geral" },
     ],
   },
   {
     label: "CLÃ",
     links: [
-      { href: "/membros", icon: "♙", label: "Membros" },
-      { href: "/memorial", icon: "▤", label: "Memorial" },
+      { href: "/membros", icon: "👥", label: "Membros" },
+      { href: "/memorial", icon: "📜", label: "Memorial" },
     ],
   },
   {
     label: "GUERRA",
     links: [
-      { href: "/war-room", icon: "⚔", label: "War Room" },
-      { href: "/ataques", icon: "◎", label: "Assistente de ataques" },
-      { href: "/cwl", icon: "⚔", label: "CWL — Liga" },
-      { href: "/ganchos", icon: "⚑", label: "Ganchos ativos" },
+      { href: "/war-room", icon: "⚔️", label: "War Room" },
+      { href: "/ataques", icon: "🎯", label: "Assistente de ataques" },
+      { href: "/cwl", icon: "🏆", label: "CWL — Liga" },
+      { href: "/ganchos", icon: "🚩", label: "Ganchos ativos" },
     ],
   },
 ];
 
 const leadershipLinks = [
-  { href: "/votacoes", icon: "⚖", label: "Votações" },
-  { href: "/lideranca", icon: "♛", label: "Central da liderança" },
-  { href: "/solicitacoes", icon: "✉", label: "Solicitações" },
+  { href: "/lideranca", icon: "👑", label: "Central da liderança" },
+  { href: "/solicitacoes", icon: "📩", label: "Solicitações" },
+  { href: "/votacoes", icon: "🗳️", label: "Votações" },
   { href: "/ocorrencias", icon: "🚨", label: "Central de ocorrências" },
-  { href: "/historico", icon: "◷", label: "Histórico punitivo" },
-  { href: "/eventos", icon: "▦", label: "Eventos" },
+  { href: "/historico", icon: "📋", label: "Histórico punitivo" },
+];
+
+const communityLinks = [
+  { href: "/eventos", icon: "🎉", label: "Eventos" },
 ];
 
 type NavLink = {
@@ -67,6 +70,21 @@ export function AppShell({
     "co_leader",
     "coleader",
   ].includes(normalizedRole);
+
+  const roleDisplay: Record<string, { label: string; icon: string }> = {
+    leader: { label: "Líder", icon: "👑" },
+    co_leader: { label: "Colíder", icon: "🛡️" },
+    coleader: { label: "Colíder", icon: "🛡️" },
+    elder: { label: "Ancião", icon: "⭐" },
+    member: { label: "Membro", icon: "⚔️" },
+  };
+
+  const currentRole = roleDisplay[normalizedRole] ?? {
+    label: normalizedRole
+      ? normalizedRole.charAt(0).toUpperCase() + normalizedRole.slice(1)
+      : "Membro",
+    icon: "⚔️",
+  };
 
   function renderLink(link: NavLink) {
     const active =
@@ -136,6 +154,14 @@ export function AppShell({
           </section>
         )}
 
+        <section>
+          <div className="nav-label">COMUNIDADE</div>
+
+          <nav className="nav" aria-label="Comunidade">
+            {communityLinks.map(renderLink)}
+          </nav>
+        </section>
+
         <div className="side-note">
           <div className="side-note-title">
             <span className="status-dot" />
@@ -170,11 +196,7 @@ export function AppShell({
               <span className="meta-separator">·</span>
 
               <span className="role-label">
-                {normalizedRole === "leader"
-                  ? "Liderança"
-                  : ["co_leader", "coleader"].includes(normalizedRole)
-                    ? "Coliderança"
-                    : "Membro"}
+                {currentRole.icon} {currentRole.label}
               </span>
             </div>
           </div>

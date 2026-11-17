@@ -93,6 +93,14 @@ export default function LoginPage() {
 
       <section style={styles.loginLayout}>
         <aside style={styles.brandPanel}>
+          <img
+            src="/assets/upalele-banner.png"
+            alt=""
+            aria-hidden="true"
+            style={styles.brandBackgroundImage}
+          />
+          <div style={styles.brandImageOverlay} aria-hidden="true" />
+
           <div style={styles.brandTop}>
             <div style={styles.logoFrame}>
               <img
@@ -284,11 +292,11 @@ export default function LoginPage() {
               </p>
             </div>
           </div>
-
-          <footer style={styles.formFooter}>
-            <span>UPALELE • CLAN HUB</span>
-            <span>RESPEITO · ESTRATÉGIA · UNIÃO</span>
-          </footer>
+<footer style={styles.formFooter}>
+  <span>UPALELE • CLAN HUB</span>
+  <span>RESPEITO · ESTRATÉGIA</span>
+</footer>
+          
         </div>
       </section>
     </main>
@@ -358,6 +366,25 @@ const styles: Record<string, CSSProperties> = {
     background:
       "linear-gradient(145deg, #17243a 0%, #111c30 55%, #0d1727 100%)",
     borderRight: "1px solid rgba(148,163,184,.12)",
+  },
+
+  brandBackgroundImage: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    objectPosition: "center",
+    opacity: 0.32,
+    pointerEvents: "none",
+  },
+
+  brandImageOverlay: {
+    position: "absolute",
+    inset: 0,
+    background:
+      "linear-gradient(180deg, rgba(13,23,39,.48), rgba(13,23,39,.82))",
+    pointerEvents: "none",
   },
 
   brandTop: {
@@ -705,13 +732,14 @@ const styles: Record<string, CSSProperties> = {
   },
 
   formFooter: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    flexWrap: "wrap",
-    color: "#65758e",
-    fontSize: 8,
-    fontWeight: 800,
-    letterSpacing: 1,
-  },
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 16,
+  flexWrap: "wrap",
+  color: "#8294ae",
+  fontSize: 8,
+  fontWeight: 800,
+  letterSpacing: 1.1,
+},
 };

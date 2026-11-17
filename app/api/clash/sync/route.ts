@@ -321,31 +321,16 @@ const opponentTag = normalizeTag(entry.opponent.tag);
         member,
       ])
     );
-    // Jogadores isentos de ocorrência por desvio de alvo.
-const SPECIAL_EXEMPT_TAG = normalizeTag("#YLLC8C8YU");
-// Consulta os perfis dos membros para identificar liderança e coliderança.
-const { data: clanProfiles, error: profilesError } = await supabase
-  .from("profiles")
-  .select("player_tag, role, is_active")
-  .eq("is_active", true)
-  .not("player_tag", "is", null);
-if (profilesError) {
-  throw new Error(
-    `Não foi possível consultar os cargos dos jogadores: ${profilesError.message}`
-  );
-}
-const exemptPlayerTags = new Set<string>([
-  SPECIAL_EXEMPT_TAG,
-]);
-for (const clanProfile of clanProfiles ?? []) {
-  const role = (clanProfile.role ?? "").trim().toLowerCase();
-  if (
-    ["leader", "co_leader", "coleader"].includes(role) &&
-    clanProfile.player_tag
-  ) {
-    exemptPlayerTags.add(normalizeTag(clanProfile.player_tag));
-  }
-}
+    
+// Jogadores isentos de ocorrência por desvio de alvo.
+const EXEMPT_PLAYER_TAGS = new Set([
+  "#L82PUQGJL",
+  "#P0CLYPGUJ",
+  "#YLLC8C8YU",
+  "#LJY90LQG",
+  "#G8V9CLC9",
+].map(normalizeTag));
+
     // Salva os ataques dos dois lados da guerra.
     const attacks: Record<string, unknown>[] = [];
     for (const member of clanMembers) {
@@ -490,7 +475,7 @@ const strategy = getTarget(
   expectedTarget &&
   normalizeTag(expectedTarget.tag) !== defenderTag &&
   strategy.ruleReference &&
-  !exemptPlayerTags.has(attackerTag)
+  !EXEMPT_PLAYER_TAGS.has(attackerTag)
 ) {
           const attackLabel =
             attackNumber === 1 ? "1º ataque" : "2º ataque";

@@ -155,6 +155,19 @@ export default async function Dashboard() {
         ? "#f87171"
         : "#eab308";
 
+        const roleDisplay: Record<string, { label: string; icon: string }> = {
+  leader: { label: "Líder", icon: "👑" },
+  co_leader: { label: "Colíder", icon: "🛡️" },
+  coleader: { label: "Colíder", icon: "🛡️" },
+  elder: { label: "Ancião", icon: "⭐" },
+  member: { label: "Membro", icon: "⚔️" },
+};
+
+const currentRole = roleDisplay[profile.role] ?? {
+  label: profile.role.charAt(0).toUpperCase() + profile.role.slice(1),
+  icon: "⚔️",
+};
+
   return (
     <AppShell
       title="Visão geral"
@@ -180,7 +193,7 @@ export default async function Dashboard() {
           ],
           [
             "Seu acesso",
-            profile.role,
+            `${currentRole.icon} ${currentRole.label}`,
             "perfil autenticado",
           ],
         ].map(([label, value, note]) => (

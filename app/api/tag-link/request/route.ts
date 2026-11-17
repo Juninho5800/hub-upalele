@@ -6,10 +6,18 @@ import { normalizeTag } from "@/lib/clash/strategy";
 
 export const dynamic = "force-dynamic";
 
-const CLAN_TAG = "#PLV2VQ0P";
 
 export async function POST(request: Request) {
   try {
+    const clanTag = process.env.CLASH_OF_CLANS_CLAN_TAG;
+
+    if (!clanTag) {
+      return NextResponse.json(
+        { error: "TAG do clã não configurada no servidor." },
+        { status: 500 }
+      );
+    }
+
     const supabase = await createClient();
 
     // 1. Verificar autenticação
@@ -67,7 +75,7 @@ export async function POST(request: Request) {
     }
 
     // 4. Consultar os membros oficiais da UPALELE
-    const members = await getClanMembers(CLAN_TAG);
+   const members = await getClanMembers(clanTag);
 
     const member = members.find(
       (item) => normalizeTag(item.tag) === playerTag
